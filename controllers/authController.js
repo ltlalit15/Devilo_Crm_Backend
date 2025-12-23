@@ -1,22 +1,20 @@
-/**
- * Authentication Controller
- * Handles user login and JWT token generation
- */
+// =====================================================
+// Authentication Controller
+// =====================================================
 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 
 /**
- * User login
- * POST /api/auth/login
- * Body: { email, password }
+ * Login user
+ * POST /api/v1/auth/login
  */
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
 
-    // Validate input
+    // Validation
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -24,51 +22,61 @@ const login = async (req, res) => {
       });
     }
 
-    // Find user by email
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Role is required (ADMIN, EMPLOYEE, or CLIENT)'
+      });
+    }
+
+    // Normalize role to uppercase for comparison
+    const normalizedRole = role.toUpperCase();
+
+    // Get user from database
     const [users] = await pool.execute(
-      'SELECT id, name, email, phone, role, password, login_access FROM users WHERE email = ?',
-      [email]
+      `SELECT id, company_id, name, email, password, role, status 
+       FROM users 
+       WHERE email = ? AND UPPER(role) = ? AND is_deleted = 0`,
+      [email, normalizedRole]
     );
 
     if (users.length === 0) {
+      // Check if user exists but with different role
+      const [checkUser] = await pool.execute(
+        `SELECT role FROM users WHERE email = ? AND is_deleted = 0`,
+        [email]
+      );
+      
+      if (checkUser.length > 0) {
+        return res.status(401).json({
+          success: false,
+          error: `User exists but role mismatch. Expected: ${normalizedRole}, Found: ${checkUser[0].role}`
+        });
+      }
+      
       return res.status(401).json({
         success: false,
-        error: 'Invalid email or password'
+        error: 'Invalid email, password, or role'
       });
     }
 
     const user = users[0];
 
-    // Check login access
-    if (!user.login_access) {
+    // Check if user is active
+    if (user.status !== 'Active') {
       return res.status(403).json({
         success: false,
-        error: 'Login access is disabled for this account'
+        error: 'User account is inactive'
       });
     }
 
     // Verify password
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    
+
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid email or password'
-      });
-    }
-
-    // Update last login timestamp
-    await pool.execute(
-      'UPDATE users SET last_login = NOW() WHERE id = ?',
-      [user.id]
-    );
-
-    // Check if JWT_SECRET is configured
-    if (!process.env.JWT_SECRET) {
-      console.error('❌ JWT_SECRET is not configured in .env file');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error. Please contact administrator.'
+        error: 'Invalid email, password, or role'
       });
     }
 
@@ -76,27 +84,26 @@ const login = async (req, res) => {
     const token = jwt.sign(
       { 
         userId: user.id,
-        email: user.email,
-        role: user.role
+        companyId: user.company_id,
+        role: user.role 
       },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { expiresIn: process.env.JWT_EXPIRE || '24h' }
     );
 
-    // Return user data (without password) and token
-    const userData = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      role: user.role
-    };
+    // Remove password from response
+    delete user.password;
 
     res.json({
       success: true,
-      message: 'Login successful',
       token,
-      user: userData
+      user: {
+        id: user.id,
+        company_id: user.company_id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -107,7 +114,63 @@ const login = async (req, res) => {
   }
 };
 
+/**
+ * Logout user (optional - mainly for token blacklisting in future)
+ * POST /api/v1/auth/logout
+ */
+const logout = async (req, res) => {
+  try {
+    // In a production app, you might want to blacklist the token here
+    // For now, we'll just return success
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Logout failed'
+    });
+  }
+};
+
+/**
+ * Get current user
+ * GET /api/v1/auth/me
+ */
+const getCurrentUser = async (req, res) => {
+  try {
+    const [users] = await pool.execute(
+      `SELECT id, company_id, name, email, role, status, avatar, phone, address, created_at 
+       FROM users 
+       WHERE id = ? AND is_deleted = 0`,
+      [req.userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: users[0]
+    });
+  } catch (error) {
+    console.error('Get current user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get user information'
+    });
+  }
+};
+
 module.exports = {
-  login
+  login,
+  logout,
+  getCurrentUser
 };
 

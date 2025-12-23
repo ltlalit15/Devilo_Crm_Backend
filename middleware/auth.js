@@ -1,101 +1,106 @@
-/**
- * Authentication Middleware
- * Verifies JWT tokens and checks role-based permissions
- */
+// =====================================================
+// Authentication Middleware
+// =====================================================
 
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 
-// Ensure JWT_SECRET is configured
-if (!process.env.JWT_SECRET) {
-  console.error('❌ JWT_SECRET is not configured in .env file');
-}
-
 /**
- * Verify JWT token from Authorization header
- * Attaches user info to req.user
+ * Verify JWT token
  */
 const verifyToken = async (req, res, next) => {
   try {
-    // Get token from Authorization header
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'No token provided. Authorization header required.' 
+      return res.status(401).json({
+        success: false,
+        error: 'No token provided. Authorization header must be: Bearer <token>'
       });
     }
 
-    const token = authHeader.split(' ')[1];
-    
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
     if (!token) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'No token provided' 
+      return res.status(401).json({
+        success: false,
+        error: 'No token provided'
       });
     }
 
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Get user from database to ensure they still exist and have login access
+
+    // Get user from database
     const [users] = await pool.execute(
-      'SELECT id, name, email, phone, role, login_access FROM users WHERE id = ? AND login_access = 1',
+      'SELECT id, company_id, name, email, role, status FROM users WHERE id = ? AND is_deleted = 0',
       [decoded.userId]
     );
 
     if (users.length === 0) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'User not found or login access revoked' 
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token. User not found.'
       });
     }
 
-    // Attach user info to request
-    req.user = users[0];
+    const user = users[0];
+
+    if (user.status !== 'Active') {
+      return res.status(403).json({
+        success: false,
+        error: 'User account is inactive'
+      });
+    }
+
+    // Attach user to request
+    req.user = user;
+    req.userId = user.id;
+    req.companyId = user.company_id;
+
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Invalid token' 
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token'
       });
     }
+    
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Token expired' 
+      return res.status(401).json({
+        success: false,
+        error: 'Token expired'
       });
     }
+
     console.error('Auth middleware error:', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: 'Authentication error' 
+    return res.status(500).json({
+      success: false,
+      error: 'Authentication error'
     });
   }
 };
 
 /**
- * Check if user has required role(s)
- * @param {string|string[]} allowedRoles - Single role or array of roles
+ * Require specific role(s)
+ * @param {string|string[]} roles - Role(s) allowed
  */
-const checkRole = (allowedRoles) => {
+const requireRole = (roles) => {
+  const allowedRoles = Array.isArray(roles) ? roles : [roles];
+
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Authentication required' 
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
       });
     }
 
-    const userRole = req.user.role;
-    const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
-
-    if (!roles.includes(userRole)) {
-      return res.status(403).json({ 
-        success: false, 
-        error: `Access denied. Required role: ${roles.join(' or ')}` 
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied. Required role: ${allowedRoles.join(' or ')}`
       });
     }
 
@@ -104,22 +109,41 @@ const checkRole = (allowedRoles) => {
 };
 
 /**
- * Combined middleware: verify token + check role
- * @param {string|string[]} allowedRoles - Single role or array of roles
+ * Optional authentication - doesn't fail if no token
  */
-const authenticate = (allowedRoles = null) => {
-  const middlewares = [verifyToken];
-  
-  if (allowedRoles) {
-    middlewares.push(checkRole(allowedRoles));
+const optionalAuth = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const [users] = await pool.execute(
+          'SELECT id, company_id, name, email, role, status FROM users WHERE id = ? AND is_deleted = 0',
+          [decoded.userId]
+        );
+
+        if (users.length > 0 && users[0].status === 'Active') {
+          req.user = users[0];
+          req.userId = users[0].id;
+          req.companyId = users[0].company_id;
+        }
+      } catch (error) {
+        // Token invalid, but continue without auth
+      }
+    }
+
+    next();
+  } catch (error) {
+    next();
   }
-  
-  return middlewares;
 };
 
 module.exports = {
   verifyToken,
-  checkRole,
-  authenticate
+  requireRole,
+  optionalAuth
 };
 

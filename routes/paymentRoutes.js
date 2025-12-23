@@ -1,33 +1,18 @@
-/**
- * Payment Routes
- * CRUD operations for payments
- */
+// =====================================================
+// Payment Routes
+// =====================================================
 
 const express = require('express');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
-const { authenticate } = require('../middleware/auth');
+const { verifyToken, requireRole } = require('../middleware/auth');
 
-// All routes require admin authentication
-const adminAuth = authenticate(['admin']);
-
-// Get all payments
-router.get('/', adminAuth, paymentController.getAllPayments);
-
-// Get payment by ID
-router.get('/:id', adminAuth, paymentController.getPaymentById);
-
-// Create new payment
-router.post('/', adminAuth, paymentController.createPayment);
-
-// Update payment
-router.put('/:id', adminAuth, paymentController.updatePayment);
-
-// Delete payment
-router.delete('/:id', adminAuth, paymentController.deletePayment);
-
-// Get payment statistics
-router.get('/stats/summary', adminAuth, paymentController.getPaymentStats);
+router.get('/', verifyToken, paymentController.getAll);
+router.post('/', verifyToken, requireRole(['ADMIN']), paymentController.create);
+router.post('/bulk', verifyToken, requireRole(['ADMIN']), paymentController.createBulk);
+router.get('/:id', verifyToken, paymentController.getById);
+router.put('/:id', verifyToken, requireRole(['ADMIN']), paymentController.update);
+router.delete('/:id', verifyToken, requireRole(['ADMIN']), paymentController.delete);
 
 module.exports = router;
 

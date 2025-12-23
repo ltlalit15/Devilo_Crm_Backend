@@ -1,21 +1,68 @@
-/**
- * Settings Routes
- * CRUD operations for workshop settings
- */
-
 const express = require('express');
 const router = express.Router();
 const settingsController = require('../controllers/settingsController');
-const { authenticate } = require('../middleware/auth');
+const { verifyToken, requireRole } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
-// All routes require admin authentication
-const auth = authenticate('admin');
+// Configure multer for optional file upload
+const uploadDir = process.env.UPLOAD_DIR || './uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
-// Get settings (Admin only)
-router.get('/', auth, settingsController.getSettings);
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
 
-// Update settings (Admin only)
-router.put('/', auth, settingsController.updateSettings);
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB for logo
+  },
+  fileFilter: (req, file, cb) => {
+    // Only allow images
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  }
+});
+
+// Optional file upload middleware
+const optionalUpload = (req, res, next) => {
+  // Only process if Content-Type is multipart/form-data
+  if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
+    upload.single('logo')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({
+          success: false,
+          error: err.message || 'File upload failed'
+        });
+      }
+      next();
+    });
+  } else {
+    // No file upload, continue normally
+    next();
+  }
+};
+
+router.get('/', verifyToken, settingsController.get);
+router.put('/', 
+  verifyToken, 
+  requireRole(['ADMIN']), 
+  optionalUpload,
+  settingsController.update
+);
 
 module.exports = router;
 

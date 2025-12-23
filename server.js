@@ -1,91 +1,151 @@
-/**
- * Workshop Management System - Express Server
- * Main entry point for the backend API
- */
+// =====================================================
+// Worksuite CRM Backend Server
+// =====================================================
 
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
-
-// Load environment variables
-dotenv.config();
-
-// Validate required environment variables
-if (!process.env.JWT_SECRET) {
-  console.error('❌ JWT_SECRET is not configured in .env file');
-  console.error('📝 Please create .env file with JWT_SECRET');
-  console.error('💡 Run: node create-env.js');
-  process.exit(1);
-}
+const helmet = require('helmet');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
-const customerRoutes = require('./routes/customerRoutes');
-const jobCardRoutes = require('./routes/jobCardRoutes');
-const testingRecordRoutes = require('./routes/testingRecordRoutes');
-const inventoryRoutes = require('./routes/inventoryRoutes');
-const quotationRoutes = require('./routes/quotationRoutes');
+const leadRoutes = require('./routes/leadRoutes');
+const clientRoutes = require('./routes/clientRoutes');
+const projectRoutes = require('./routes/projectRoutes');
+const taskRoutes = require('./routes/taskRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
+const estimateRoutes = require('./routes/estimateRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
-const reportRoutes = require('./routes/reportRoutes');
-const dashboardRoutes = require('./routes/dashboardRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
+const contractRoutes = require('./routes/contractRoutes');
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const employeeRoutes = require('./routes/employeeRoutes');
+const attendanceRoutes = require('./routes/attendanceRoutes');
+const timeTrackingRoutes = require('./routes/timeTrackingRoutes');
+const eventRoutes = require('./routes/eventRoutes');
+const departmentRoutes = require('./routes/departmentRoutes');
+const positionRoutes = require('./routes/positionRoutes');
+const messageRoutes = require('./routes/messageRoutes');
+const ticketRoutes = require('./routes/ticketRoutes');
+const customFieldRoutes = require('./routes/customFieldRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
+const companyPackageRoutes = require('./routes/companyPackageRoutes');
+const companyRoutes = require('./routes/companyRoutes');
 
-// Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 5000;
+const API_VERSION = process.env.API_VERSION || 'v1';
 
+// =====================================================
 // Middleware
-app.use(cors()); // Enable CORS for frontend
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
+// =====================================================
 
-// Health check endpoint
+// Security
+app.use(helmet());
+
+// CORS
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true
+}));
+
+// Body parser
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Logging
+if (process.env.NODE_ENV !== 'production') {
+  app.use(morgan('dev'));
+} else {
+  app.use(morgan('combined'));
+}
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
+});
+app.use(`/api/${API_VERSION}/`, limiter);
+
+// Static files (for uploads)
+app.use('/uploads', express.static('uploads'));
+
+// =====================================================
+// Routes
+// =====================================================
+
+// Health check
 app.get('/health', (req, res) => {
   res.json({ 
-    success: true, 
-    message: 'Workshop Management API is running',
-    timestamp: new Date().toISOString()
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
 // API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/customers', customerRoutes);
-app.use('/api/job-cards', jobCardRoutes);
-app.use('/api/testing-records', testingRecordRoutes);
-app.use('/api/inventory', inventoryRoutes);
-app.use('/api/quotations', quotationRoutes);
-app.use('/api/invoices', invoiceRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/settings', settingsRoutes);
+const apiBase = `/api/${API_VERSION}`;
+
+app.use(`${apiBase}/auth`, authRoutes);
+app.use(`${apiBase}/dashboard`, dashboardRoutes);
+app.use(`${apiBase}/users`, userRoutes);
+app.use(`${apiBase}/leads`, leadRoutes);
+app.use(`${apiBase}/clients`, clientRoutes);
+app.use(`${apiBase}/projects`, projectRoutes);
+app.use(`${apiBase}/tasks`, taskRoutes);
+app.use(`${apiBase}/invoices`, invoiceRoutes);
+app.use(`${apiBase}/estimates`, estimateRoutes);
+app.use(`${apiBase}/payments`, paymentRoutes);
+app.use(`${apiBase}/expenses`, expenseRoutes);
+app.use(`${apiBase}/contracts`, contractRoutes);
+app.use(`${apiBase}/subscriptions`, subscriptionRoutes);
+app.use(`${apiBase}/employees`, employeeRoutes);
+app.use(`${apiBase}/attendance`, attendanceRoutes);
+app.use(`${apiBase}/time-logs`, timeTrackingRoutes);
+app.use(`${apiBase}/events`, eventRoutes);
+app.use(`${apiBase}/departments`, departmentRoutes);
+app.use(`${apiBase}/positions`, positionRoutes);
+app.use(`${apiBase}/messages`, messageRoutes);
+app.use(`${apiBase}/tickets`, ticketRoutes);
+app.use(`${apiBase}/custom-fields`, customFieldRoutes);
+app.use(`${apiBase}/settings`, settingsRoutes);
+app.use(`${apiBase}/company-packages`, companyPackageRoutes);
+app.use(`${apiBase}/companies`, companyRoutes);
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ 
-    success: false, 
-    error: 'Route not found' 
+  res.status(404).json({
+    success: false,
+    error: 'Route not found'
   });
 });
 
-// Error handling middleware
+// Error handler
 app.use((err, req, res, next) => {
   console.error('Error:', err);
-  res.status(err.status || 500).json({ 
-    success: false, 
-    error: err.message || 'Internal server error' 
+  
+  res.status(err.status || 500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Internal server error' 
+      : err.message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
   });
 });
 
-// Start server
+// =====================================================
+// Start Server
+// =====================================================
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 API available at http://localhost:${PORT}/api`);
-  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`🚀 Worksuite CRM Backend Server running on port ${PORT}`);
+  console.log(`📡 API Base URL: http://localhost:${PORT}${apiBase}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 module.exports = app;

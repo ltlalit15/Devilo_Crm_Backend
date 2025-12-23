@@ -1,30 +1,20 @@
-/**
- * Invoice Routes
- * CRUD operations for invoices
- */
+// =====================================================
+// Invoice Routes
+// =====================================================
 
 const express = require('express');
 const router = express.Router();
 const invoiceController = require('../controllers/invoiceController');
-const { authenticate } = require('../middleware/auth');
+const { verifyToken, requireRole } = require('../middleware/auth');
 
-// All routes require admin authentication
-const adminAuth = authenticate(['admin']);
-
-// Get all invoices
-router.get('/', adminAuth, invoiceController.getAllInvoices);
-
-// Get invoice by ID
-router.get('/:id', adminAuth, invoiceController.getInvoiceById);
-
-// Create new invoice
-router.post('/', adminAuth, invoiceController.createInvoice);
-
-// Update invoice
-router.put('/:id', adminAuth, invoiceController.updateInvoice);
-
-// Delete invoice
-router.delete('/:id', adminAuth, invoiceController.deleteInvoice);
+// All routes require authentication
+router.get('/', verifyToken, invoiceController.getAll);
+router.get('/:id', verifyToken, invoiceController.getById);
+router.post('/', verifyToken, requireRole(['ADMIN']), invoiceController.create);
+router.put('/:id', verifyToken, requireRole(['ADMIN']), invoiceController.update);
+router.delete('/:id', verifyToken, requireRole(['ADMIN']), invoiceController.delete);
+router.post('/create-from-time-logs', verifyToken, requireRole(['ADMIN']), invoiceController.createFromTimeLogs);
+router.post('/create-recurring', verifyToken, requireRole(['ADMIN']), invoiceController.createRecurring);
 
 module.exports = router;
 

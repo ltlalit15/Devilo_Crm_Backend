@@ -1,91 +1,108 @@
-/**
- * Invoice Controller
- * CRUD operations for invoices
- */
+// =====================================================
+// Invoice Controller
+// =====================================================
 
 const pool = require('../config/db');
 
 /**
- * Auto-generate invoice number (INV-001, INV-002, etc.)
+ * Generate invoice number
  */
-const generateInvoiceNumber = async () => {
-  try {
-    const [invoices] = await pool.execute(
-      'SELECT invoice_no FROM invoices ORDER BY id DESC LIMIT 1'
-    );
+const generateInvoiceNumber = async (companyId) => {
+  const [result] = await pool.execute(
+    `SELECT COUNT(*) as count FROM invoices WHERE company_id = ?`,
+    [companyId]
+  );
+  const nextNum = (result[0].count || 0) + 1;
+  return `INV#${String(nextNum).padStart(3, '0')}`;
+};
 
-    if (invoices.length === 0) {
-      return 'INV-001';
-    }
-
-    const latestInvoiceNo = invoices[0].invoice_no;
-    const match = latestInvoiceNo.match(/INV-(\d+)/);
-    
-    if (match) {
-      const nextNumber = parseInt(match[1]) + 1;
-      return `INV-${String(nextNumber).padStart(3, '0')}`;
-    }
-
-    return 'INV-001';
-  } catch (error) {
-    console.error('Generate invoice number error:', error);
-    return `INV-${Date.now().toString().slice(-6)}`;
+/**
+ * Calculate invoice totals
+ */
+const calculateTotals = (items, discount, discountType) => {
+  let subTotal = 0;
+  
+  for (const item of items) {
+    subTotal += parseFloat(item.amount || 0);
   }
+
+  let discountAmount = 0;
+  if (discountType === '%') {
+    discountAmount = (subTotal * parseFloat(discount || 0)) / 100;
+  } else {
+    discountAmount = parseFloat(discount || 0);
+  }
+
+  const total = subTotal - discountAmount;
+  const taxAmount = 0; // Tax is included in item amounts
+
+  return {
+    sub_total: subTotal,
+    discount_amount: discountAmount,
+    tax_amount: taxAmount,
+    total: total,
+    unpaid: total
+  };
 };
 
 /**
  * Get all invoices
- * GET /api/invoices
- * Query params: status
+ * GET /api/v1/invoices
  */
-const getAllInvoices = async (req, res) => {
+const getAll = async (req, res) => {
   try {
-    const { status } = req.query;
-    
-    let query = `
-      SELECT 
-        i.id, i.invoice_no, i.job_card_id, i.quotation_id,
-        i.labour_amount, i.parts_amount, i.vat_percentage, i.grand_total,
-        i.status, i.created_at, i.updated_at,
-        jc.job_no,
-        c.name AS customer_name
-      FROM invoices i
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE 1=1
-    `;
-    const params = [];
+    const { page = 1, pageSize = 10, status, client_id } = req.query;
+    const offset = (page - 1) * pageSize;
 
-    if (status && status !== 'all') {
-      query += ' AND i.status = ?';
+    let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
+    const params = [req.companyId];
+
+    if (status) {
+      whereClause += ' AND i.status = ?';
       params.push(status);
     }
+    if (client_id) {
+      whereClause += ' AND i.client_id = ?';
+      params.push(client_id);
+    }
 
-    query += ' ORDER BY i.created_at DESC';
+    const [invoices] = await pool.execute(
+      `SELECT i.*, c.company_name as client_name
+       FROM invoices i
+       LEFT JOIN clients c ON i.client_id = c.id
+       ${whereClause}
+       ORDER BY i.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, parseInt(pageSize), offset]
+    );
 
-    const [invoices] = await pool.execute(query, params);
+    // Get items for each invoice
+    for (let invoice of invoices) {
+      const [items] = await pool.execute(
+        `SELECT * FROM invoice_items WHERE invoice_id = ?`,
+        [invoice.id]
+      );
+      invoice.items = items;
+    }
 
-    const formattedInvoices = invoices.map(i => ({
-      id: i.id,
-      invoiceNo: i.invoice_no,
-      jobCard: i.job_no,
-      customerName: i.customer_name,
-      labourAmount: parseFloat(i.labour_amount) || 0,
-      partsAmount: parseFloat(i.parts_amount) || 0,
-      vatPercentage: parseFloat(i.vat_percentage) || 0,
-      grandTotal: parseFloat(i.grand_total) || 0,
-      status: i.status,
-      createdAt: i.created_at ? i.created_at.toISOString().split('T')[0] : null,
-      updatedAt: i.updated_at
-    }));
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM invoices i ${whereClause}`,
+      params
+    );
 
     res.json({
       success: true,
-      data: formattedInvoices,
-      count: formattedInvoices.length
+      data: invoices,
+      pagination: {
+        page: parseInt(page),
+        pageSize: parseInt(pageSize),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / pageSize)
+      }
     });
   } catch (error) {
-    console.error('Get all invoices error:', error);
+    console.error('Get invoices error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch invoices'
@@ -95,31 +112,18 @@ const getAllInvoices = async (req, res) => {
 
 /**
  * Get invoice by ID
- * GET /api/invoices/:id
- * Returns invoice with full job card details for printing
+ * GET /api/v1/invoices/:id
  */
-const getInvoiceById = async (req, res) => {
+const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
     const [invoices] = await pool.execute(
-      `SELECT 
-        i.id, i.invoice_no, i.job_card_id, i.quotation_id,
-        i.labour_amount, i.parts_amount, i.vat_percentage, i.grand_total,
-        i.status, i.created_at, i.updated_at,
-        jc.id AS job_card_id, jc.job_no, jc.vehicle_type, jc.vehicle_number,
-        jc.engine_model, jc.job_type, jc.job_sub_type, jc.brand,
-        jc.pump_injector_serial, jc.status AS job_status,
-        jc.received_date, jc.expected_delivery_date, jc.description,
-        c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
-        c.company AS company_name, c.address AS customer_address,
-        u.name AS technician_name
-      FROM invoices i
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      LEFT JOIN users u ON jc.technician_id = u.id
-      WHERE i.id = ?`,
-      [id]
+      `SELECT i.*, c.company_name as client_name
+       FROM invoices i
+       LEFT JOIN clients c ON i.client_id = c.id
+       WHERE i.id = ? AND i.company_id = ? AND i.is_deleted = 0`,
+      [id, req.companyId]
     );
 
     if (invoices.length === 0) {
@@ -129,56 +133,21 @@ const getInvoiceById = async (req, res) => {
       });
     }
 
-    const i = invoices[0];
-    
-    // Calculate VAT amount and subtotal
-    const subtotal = (parseFloat(i.labour_amount) || 0) + (parseFloat(i.parts_amount) || 0);
-    const vatAmount = (subtotal * (parseFloat(i.vat_percentage) || 0)) / 100;
-    
-    const formattedInvoice = {
-      id: i.id,
-      invoiceNo: i.invoice_no,
-      jobCardId: i.job_card_id,
-      jobCard: i.job_no,
-      quotationId: i.quotation_id,
-      labourAmount: parseFloat(i.labour_amount) || 0,
-      partsAmount: parseFloat(i.parts_amount) || 0,
-      vatPercentage: parseFloat(i.vat_percentage) || 0,
-      vatAmount: vatAmount,
-      subtotal: subtotal,
-      grandTotal: parseFloat(i.grand_total) || 0,
-      status: i.status,
-      createdAt: i.created_at,
-      updatedAt: i.updated_at,
-      // Full job card details for printing
-      jobCardDetails: {
-        id: i.job_card_id,
-        jobNumber: i.job_no,
-        customerName: i.customer_name,
-        customerPhone: i.customer_phone,
-        companyName: i.company_name,
-        customerAddress: i.customer_address,
-        vehicleType: i.vehicle_type,
-        vehicleNumber: i.vehicle_number,
-        engineModel: i.engine_model,
-        jobType: i.job_type,
-        jobSubType: i.job_sub_type,
-        brand: i.brand,
-        pumpInjectorSerial: i.pump_injector_serial,
-        technician: i.technician_name,
-        status: i.job_status,
-        receivedDate: i.received_date ? i.received_date.toISOString().split('T')[0] : null,
-        expectedDeliveryDate: i.expected_delivery_date ? i.expected_delivery_date.toISOString().split('T')[0] : null,
-        description: i.description
-      }
-    };
+    const invoice = invoices[0];
+
+    // Get items
+    const [items] = await pool.execute(
+      `SELECT * FROM invoice_items WHERE invoice_id = ?`,
+      [invoice.id]
+    );
+    invoice.items = items;
 
     res.json({
       success: true,
-      data: formattedInvoice
+      data: invoice
     });
   } catch (error) {
-    console.error('Get invoice by ID error:', error);
+    console.error('Get invoice error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch invoice'
@@ -187,136 +156,133 @@ const getInvoiceById = async (req, res) => {
 };
 
 /**
- * Create new invoice
- * POST /api/invoices
- * Body: { quotation (optional), jobCard, customerName, labourAmount, partsAmount, vatPercentage, status }
+ * Create invoice
+ * POST /api/v1/invoices
  */
-const createInvoice = async (req, res) => {
+const create = async (req, res) => {
   try {
-    const { quotation, jobCard, customerName, labourAmount, partsAmount, vatPercentage, status } = req.body;
+    const {
+      invoice_date, due_date, currency, exchange_rate, client_id, project_id,
+      calculate_tax, bank_account, payment_details, billing_address,
+      shipping_address, generated_by, note, terms, discount, discount_type,
+      items = [], is_recurring, billing_frequency, recurring_start_date,
+      recurring_total_count, is_time_log_invoice, time_log_from, time_log_to
+    } = req.body;
 
-    let jobCardId = null;
-    let labour = 0;
-    let parts = 0;
-    let vat = 0;
-
-    // If quotation is provided, get data from quotation
-    if (quotation) {
-      const [quotations] = await pool.execute(
-        'SELECT job_card_id, labour_charges, parts_charges, vat_percentage FROM quotations WHERE quotation_no = ?',
-        [quotation]
-      );
-
-      if (quotations.length > 0) {
-        const q = quotations[0];
-        jobCardId = q.job_card_id;
-        labour = parseFloat(q.labour_charges) || 0;
-        parts = parseFloat(q.parts_charges) || 0;
-        vat = parseFloat(q.vat_percentage) || 0;
-      }
-    }
-
-    // If job card is provided directly
-    if (!jobCardId && jobCard) {
-      const [jobCards] = await pool.execute(
-        'SELECT id FROM job_cards WHERE job_no = ?',
-        [jobCard]
-      );
-
-      if (jobCards.length > 0) {
-        jobCardId = jobCards[0].id;
-      }
-    }
-
-    if (!jobCardId) {
+    // Validation
+    if (!invoice_date || !due_date || !client_id || !items || items.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Job card is required'
+        error: 'invoice_date, due_date, client_id, and items are required'
       });
     }
 
-    // Override with provided values if any
-    if (labourAmount !== undefined) {
-      labour = parseFloat(labourAmount) || 0;
-    }
-    if (partsAmount !== undefined) {
-      parts = parseFloat(partsAmount) || 0;
-    }
-    if (vatPercentage !== undefined) {
-      vat = parseFloat(vatPercentage) || 0;
-    }
-
-    // Calculate grand total
-    const subtotal = labour + parts;
-    const vatAmount = (subtotal * vat) / 100;
-    const grandTotal = subtotal + vatAmount;
-
     // Generate invoice number
-    const invoiceNo = await generateInvoiceNumber();
+    const invoice_number = await generateInvoiceNumber(req.companyId);
 
-    // Get quotation ID if quotation was provided
-    let quotationId = null;
-    if (quotation) {
-      const [quotations] = await pool.execute(
-        'SELECT id FROM quotations WHERE quotation_no = ?',
-        [quotation]
-      );
-      if (quotations.length > 0) {
-        quotationId = quotations[0].id;
-      }
-    }
+    // Calculate totals
+    const totals = calculateTotals(items, discount, discount_type);
 
-    // Insert invoice
+    // Insert invoice - convert undefined to null for SQL
     const [result] = await pool.execute(
       `INSERT INTO invoices (
-        invoice_no, job_card_id, quotation_id,
-        labour_amount, parts_amount, vat_percentage, grand_total,
-        status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        company_id, invoice_number, invoice_date, due_date, currency, exchange_rate,
+        client_id, project_id, calculate_tax, bank_account, payment_details,
+        billing_address, shipping_address, generated_by, note, terms,
+        discount, discount_type, sub_total, discount_amount, tax_amount,
+        total, unpaid, status, is_recurring, billing_frequency,
+        recurring_start_date, recurring_total_count, is_time_log_invoice,
+        time_log_from, time_log_to, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        invoiceNo,
-        jobCardId,
-        quotationId,
-        labour,
-        parts,
-        vat,
-        grandTotal,
-        status || 'Unpaid'
+        req.companyId ?? null,
+        invoice_number,
+        invoice_date,
+        due_date,
+        currency || 'USD',
+        exchange_rate ?? 1.0,
+        client_id,
+        project_id ?? null,
+        calculate_tax || 'After Discount',
+        bank_account ?? null,
+        payment_details ?? null,
+        billing_address ?? null,
+        shipping_address ?? null,
+        generated_by || 'Worksuite',
+        note ?? null,
+        terms || 'Thank you for your business.',
+        discount ?? 0,
+        discount_type || '%',
+        totals.sub_total,
+        totals.discount_amount,
+        totals.tax_amount,
+        totals.total,
+        totals.unpaid,
+        'Unpaid',
+        is_recurring ?? 0,
+        billing_frequency ?? null,
+        recurring_start_date ?? null,
+        recurring_total_count ?? null,
+        is_time_log_invoice ?? 0,
+        time_log_from ?? null,
+        time_log_to ?? null,
+        req.userId ?? null
       ]
     );
 
-    // Fetch created invoice
-    const [invoices] = await pool.execute(
-      `SELECT 
-        i.id, i.invoice_no, i.job_card_id, i.quotation_id,
-        i.labour_amount, i.parts_amount, i.vat_percentage, i.grand_total,
-        i.status, i.created_at, i.updated_at,
-        jc.job_no,
-        c.name AS customer_name
-      FROM invoices i
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE i.id = ?`,
-      [result.insertId]
-    );
+    const invoiceId = result.insertId;
 
-    const i = invoices[0];
-    const formattedInvoice = {
-      id: i.id,
-      invoiceNo: i.invoice_no,
-      jobCard: i.job_no,
-      customerName: i.customer_name,
-      labourAmount: parseFloat(i.labour_amount) || 0,
-      partsAmount: parseFloat(i.parts_amount) || 0,
-      vatPercentage: parseFloat(i.vat_percentage) || 0,
-      grandTotal: parseFloat(i.grand_total) || 0,
-      status: i.status
-    };
+    // Insert items - calculate amount if not provided
+    if (items.length > 0) {
+      const itemValues = items.map(item => {
+        const quantity = parseFloat(item.quantity || 1);
+        const unitPrice = parseFloat(item.unit_price || 0);
+        const taxRate = parseFloat(item.tax_rate || 0);
+        
+        // Calculate amount: (quantity * unit_price) + tax
+        let amount = quantity * unitPrice;
+        if (taxRate > 0) {
+          amount += (amount * taxRate / 100);
+        }
+        
+        // Use provided amount if available, otherwise use calculated amount
+        const finalAmount = item.amount !== undefined && item.amount !== null 
+          ? parseFloat(item.amount) 
+          : amount;
+        
+        return [
+          invoiceId,
+          item.item_name,
+          item.description || null,
+          quantity,
+          item.unit || 'Pcs',
+          unitPrice,
+          item.tax || null,
+          taxRate,
+          item.file_path || null,
+          finalAmount
+        ];
+      });
+
+      await pool.query(
+        `INSERT INTO invoice_items (
+          invoice_id, item_name, description, quantity, unit, unit_price,
+          tax, tax_rate, file_path, amount
+        ) VALUES ?`,
+        [itemValues]
+      );
+    }
+
+    // Get created invoice
+    const [invoices] = await pool.execute(
+      `SELECT * FROM invoices WHERE id = ?`,
+      [invoiceId]
+    );
 
     res.status(201).json({
       success: true,
-      message: 'Invoice created successfully',
-      data: formattedInvoice
+      data: invoices[0],
+      message: 'Invoice created successfully'
     });
   } catch (error) {
     console.error('Create invoice error:', error);
@@ -329,100 +295,117 @@ const createInvoice = async (req, res) => {
 
 /**
  * Update invoice
- * PUT /api/invoices/:id
+ * PUT /api/v1/invoices/:id
  */
-const updateInvoice = async (req, res) => {
+const update = async (req, res) => {
   try {
     const { id } = req.params;
-    const { labourAmount, partsAmount, vatPercentage, status } = req.body;
+    const updateFields = req.body;
 
     // Check if invoice exists
-    const [existingInvoices] = await pool.execute(
-      'SELECT id, labour_amount, parts_amount, vat_percentage FROM invoices WHERE id = ?',
-      [id]
+    const [invoices] = await pool.execute(
+      `SELECT id FROM invoices WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
     );
 
-    if (existingInvoices.length === 0) {
+    if (invoices.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Invoice not found'
       });
     }
 
-    const existing = existingInvoices[0];
-
     // Build update query
+    const allowedFields = [
+      'invoice_date', 'due_date', 'currency', 'exchange_rate', 'client_id',
+      'project_id', 'calculate_tax', 'bank_account', 'payment_details',
+      'billing_address', 'shipping_address', 'note', 'terms', 'discount',
+      'discount_type', 'status'
+    ];
+
     const updates = [];
-    const params = [];
+    const values = [];
 
-    let labour = parseFloat(labourAmount) !== undefined ? parseFloat(labourAmount) : parseFloat(existing.labour_amount);
-    let parts = parseFloat(partsAmount) !== undefined ? parseFloat(partsAmount) : parseFloat(existing.parts_amount);
-    let vat = parseFloat(vatPercentage) !== undefined ? parseFloat(vatPercentage) : parseFloat(existing.vat_percentage);
-
-    if (labourAmount !== undefined) {
-      updates.push('labour_amount = ?');
-      params.push(labour);
-    }
-    if (partsAmount !== undefined) {
-      updates.push('parts_amount = ?');
-      params.push(parts);
-    }
-    if (vatPercentage !== undefined) {
-      updates.push('vat_percentage = ?');
-      params.push(vat);
-    }
-    if (status) {
-      updates.push('status = ?');
-      params.push(status);
+    for (const field of allowedFields) {
+      if (updateFields.hasOwnProperty(field)) {
+        updates.push(`${field} = ?`);
+        // Convert undefined to null for SQL
+        values.push(updateFields[field] === undefined ? null : updateFields[field]);
+      }
     }
 
-    // Recalculate grand total
-    const subtotal = labour + parts;
-    const vatAmount = (subtotal * vat) / 100;
-    const grandTotal = subtotal + vatAmount;
+    // Recalculate totals if items are updated
+    if (updateFields.items) {
+      const totals = calculateTotals(
+        updateFields.items,
+        updateFields.discount || 0,
+        updateFields.discount_type || '%'
+      );
+      updates.push('sub_total = ?', 'discount_amount = ?', 'tax_amount = ?', 'total = ?', 'unpaid = ?');
+      values.push(totals.sub_total, totals.discount_amount, totals.tax_amount, totals.total, totals.unpaid);
 
-    updates.push('grand_total = ?');
-    params.push(grandTotal);
-    updates.push('updated_at = NOW()');
-    params.push(id);
+      // Update items - calculate amount if not provided
+      await pool.execute(`DELETE FROM invoice_items WHERE invoice_id = ?`, [id]);
+      if (updateFields.items.length > 0) {
+        const itemValues = updateFields.items.map(item => {
+          const quantity = parseFloat(item.quantity || 1);
+          const unitPrice = parseFloat(item.unit_price || 0);
+          const taxRate = parseFloat(item.tax_rate || 0);
+          
+          // Calculate amount: (quantity * unit_price) + tax
+          let amount = quantity * unitPrice;
+          if (taxRate > 0) {
+            amount += (amount * taxRate / 100);
+          }
+          
+          // Use provided amount if available, otherwise use calculated amount
+          const finalAmount = item.amount !== undefined && item.amount !== null 
+            ? parseFloat(item.amount) 
+            : amount;
+          
+          return [
+            id,
+            item.item_name,
+            item.description || null,
+            quantity,
+            item.unit || 'Pcs',
+            unitPrice,
+            item.tax || null,
+            taxRate,
+            item.file_path || null,
+            finalAmount
+          ];
+        });
+        await pool.query(
+          `INSERT INTO invoice_items (
+            invoice_id, item_name, description, quantity, unit, unit_price,
+            tax, tax_rate, file_path, amount
+          ) VALUES ?`,
+          [itemValues]
+        );
+      }
+    }
 
-    await pool.execute(
-      `UPDATE invoices SET ${updates.join(', ')} WHERE id = ?`,
-      params
-    );
+    if (updates.length > 0) {
+      updates.push('updated_at = CURRENT_TIMESTAMP');
+      values.push(id, req.companyId);
 
-    // Fetch updated invoice
-    const [invoices] = await pool.execute(
-      `SELECT 
-        i.id, i.invoice_no, i.job_card_id, i.quotation_id,
-        i.labour_amount, i.parts_amount, i.vat_percentage, i.grand_total,
-        i.status, i.created_at, i.updated_at,
-        jc.job_no,
-        c.name AS customer_name
-      FROM invoices i
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE i.id = ?`,
+      await pool.execute(
+        `UPDATE invoices SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        values
+      );
+    }
+
+    // Get updated invoice
+    const [updatedInvoices] = await pool.execute(
+      `SELECT * FROM invoices WHERE id = ?`,
       [id]
     );
 
-    const i = invoices[0];
-    const formattedInvoice = {
-      id: i.id,
-      invoiceNo: i.invoice_no,
-      jobCard: i.job_no,
-      customerName: i.customer_name,
-      labourAmount: parseFloat(i.labour_amount) || 0,
-      partsAmount: parseFloat(i.parts_amount) || 0,
-      vatPercentage: parseFloat(i.vat_percentage) || 0,
-      grandTotal: parseFloat(i.grand_total) || 0,
-      status: i.status
-    };
-
     res.json({
       success: true,
-      message: 'Invoice updated successfully',
-      data: formattedInvoice
+      data: updatedInvoices[0],
+      message: 'Invoice updated successfully'
     });
   } catch (error) {
     console.error('Update invoice error:', error);
@@ -434,41 +417,25 @@ const updateInvoice = async (req, res) => {
 };
 
 /**
- * Delete invoice
- * DELETE /api/invoices/:id
+ * Delete invoice (soft delete)
+ * DELETE /api/v1/invoices/:id
  */
 const deleteInvoice = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if invoice exists
-    const [invoices] = await pool.execute(
-      'SELECT id FROM invoices WHERE id = ?',
-      [id]
+    const [result] = await pool.execute(
+      `UPDATE invoices SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND company_id = ?`,
+      [id, req.companyId]
     );
 
-    if (invoices.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
         error: 'Invoice not found'
       });
     }
-
-    // Check if invoice has payments
-    const [payments] = await pool.execute(
-      'SELECT id FROM payments WHERE invoice_id = ? LIMIT 1',
-      [id]
-    );
-
-    if (payments.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot delete invoice with existing payments'
-      });
-    }
-
-    // Delete invoice
-    await pool.execute('DELETE FROM invoices WHERE id = ?', [id]);
 
     res.json({
       success: true,
@@ -483,11 +450,239 @@ const deleteInvoice = async (req, res) => {
   }
 };
 
+/**
+ * Create invoice from time logs
+ * POST /api/v1/invoices/create-from-time-logs
+ */
+const createFromTimeLogs = async (req, res) => {
+  try {
+    const { time_log_from, time_log_to, client_id, project_id, invoice_date, due_date } = req.body;
+
+    // Validation
+    if (!time_log_from || !time_log_to || !client_id || !invoice_date || !due_date) {
+      return res.status(400).json({
+        success: false,
+        error: 'time_log_from, time_log_to, client_id, invoice_date, and due_date are required'
+      });
+    }
+
+    // Get time logs
+    const [timeLogs] = await pool.execute(
+      `SELECT * FROM time_logs
+       WHERE company_id = ? AND date BETWEEN ? AND ?
+       AND (project_id = ? OR ? IS NULL)
+       AND is_deleted = 0`,
+      [req.companyId, time_log_from, time_log_to, project_id || null, project_id || null]
+    );
+
+    if (timeLogs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No time logs found for the specified period'
+      });
+    }
+
+    // Group by task and calculate totals
+    const taskHours = {};
+    for (const log of timeLogs) {
+      const key = log.task_id || 'general';
+      if (!taskHours[key]) {
+        taskHours[key] = { hours: 0, task_id: log.task_id };
+      }
+      taskHours[key].hours += parseFloat(log.hours);
+    }
+
+    // Create invoice items from time logs
+    const items = [];
+    for (const [key, data] of Object.entries(taskHours)) {
+      // Get task name if available
+      let itemName = 'Time Log Entry';
+      if (data.task_id) {
+        const [tasks] = await pool.execute(`SELECT title FROM tasks WHERE id = ?`, [data.task_id]);
+        if (tasks.length > 0) {
+          itemName = tasks[0].title;
+        }
+      }
+
+      items.push({
+        item_name: itemName,
+        description: `Time logged: ${data.hours} hours`,
+        quantity: data.hours,
+        unit: 'Hours',
+        unit_price: 100, // Default hourly rate - should be configurable
+        amount: data.hours * 100
+      });
+    }
+
+    // Create invoice
+    const invoiceData = {
+      invoice_date,
+      due_date,
+      client_id,
+      project_id,
+      items,
+      is_time_log_invoice: true,
+      time_log_from,
+      time_log_to
+    };
+
+    // Use create function
+    return await create({ ...req, body: invoiceData }, res);
+  } catch (error) {
+    console.error('Create from time logs error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create invoice from time logs'
+    });
+  }
+};
+
+/**
+ * Create recurring invoice
+ * POST /api/v1/invoices/create-recurring
+ */
+const createRecurring = async (req, res) => {
+  try {
+    const {
+      billing_frequency, recurring_start_date, recurring_total_count,
+      client_id, items = []
+    } = req.body;
+
+    // Validation
+    if (!billing_frequency || !recurring_start_date || !recurring_total_count || !client_id || !items || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'billing_frequency, recurring_start_date, recurring_total_count, client_id, and items are required'
+      });
+    }
+
+    const invoices = [];
+    const startDate = new Date(recurring_start_date);
+
+    for (let i = 0; i < recurring_total_count; i++) {
+      let invoiceDate = new Date(startDate);
+      let dueDate = new Date(startDate);
+
+      // Calculate dates based on frequency
+      if (billing_frequency === 'Monthly') {
+        invoiceDate.setMonth(startDate.getMonth() + i);
+        dueDate.setMonth(startDate.getMonth() + i);
+        dueDate.setDate(dueDate.getDate() + 30);
+      } else if (billing_frequency === 'Quarterly') {
+        invoiceDate.setMonth(startDate.getMonth() + (i * 3));
+        dueDate.setMonth(startDate.getMonth() + (i * 3));
+        dueDate.setDate(dueDate.getDate() + 90);
+      } else if (billing_frequency === 'Yearly') {
+        invoiceDate.setFullYear(startDate.getFullYear() + i);
+        dueDate.setFullYear(startDate.getFullYear() + i);
+        dueDate.setDate(dueDate.getDate() + 365);
+      }
+
+      const invoiceData = {
+        invoice_date: invoiceDate.toISOString().split('T')[0],
+        due_date: dueDate.toISOString().split('T')[0],
+        client_id,
+        items,
+        is_recurring: true,
+        billing_frequency,
+        recurring_start_date: recurring_start_date,
+        recurring_total_count: recurring_total_count
+      };
+
+      // Create invoice
+      const invoice_number = await generateInvoiceNumber(req.companyId);
+      const totals = calculateTotals(items, 0, '%');
+
+      const [result] = await pool.execute(
+        `INSERT INTO invoices (
+          company_id, invoice_number, invoice_date, due_date, client_id,
+          sub_total, discount_amount, tax_amount, total, unpaid, status,
+          is_recurring, billing_frequency, recurring_start_date,
+          recurring_total_count, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          req.companyId ?? null,
+          invoice_number,
+          invoiceData.invoice_date,
+          invoiceData.due_date,
+          client_id,
+          totals.sub_total,
+          totals.discount_amount,
+          totals.tax_amount,
+          totals.total,
+          totals.unpaid,
+          'Unpaid',
+          1,
+          billing_frequency ?? null,
+          recurring_start_date ?? null,
+          recurring_total_count ?? null,
+          req.userId ?? null
+        ]
+      );
+
+      // Insert items - calculate amount if not provided
+      const itemValues = items.map(item => {
+        const quantity = parseFloat(item.quantity || 1);
+        const unitPrice = parseFloat(item.unit_price || 0);
+        const taxRate = parseFloat(item.tax_rate || 0);
+        
+        // Calculate amount: (quantity * unit_price) + tax
+        let amount = quantity * unitPrice;
+        if (taxRate > 0) {
+          amount += (amount * taxRate / 100);
+        }
+        
+        // Use provided amount if available, otherwise use calculated amount
+        const finalAmount = item.amount !== undefined && item.amount !== null 
+          ? parseFloat(item.amount) 
+          : amount;
+        
+        return [
+          result.insertId,
+          item.item_name,
+          item.description || null,
+          quantity,
+          item.unit || 'Pcs',
+          unitPrice,
+          item.tax || null,
+          taxRate,
+          item.file_path || null,
+          finalAmount
+        ];
+      });
+
+      await pool.query(
+        `INSERT INTO invoice_items (
+          invoice_id, item_name, description, quantity, unit, unit_price,
+          tax, tax_rate, file_path, amount
+        ) VALUES ?`,
+        [itemValues]
+      );
+
+      invoices.push({ id: result.insertId, invoice_number });
+    }
+
+    res.status(201).json({
+      success: true,
+      data: invoices,
+      message: `${invoices.length} recurring invoices created successfully`
+    });
+  } catch (error) {
+    console.error('Create recurring invoice error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create recurring invoices'
+    });
+  }
+};
+
 module.exports = {
-  getAllInvoices,
-  getInvoiceById,
-  createInvoice,
-  updateInvoice,
-  deleteInvoice
+  getAll,
+  getById,
+  create,
+  update,
+  delete: deleteInvoice,
+  createFromTimeLogs,
+  createRecurring
 };
 

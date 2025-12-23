@@ -1,103 +1,61 @@
-/**
- * Payment Controller
- * CRUD operations for payments
- */
+// =====================================================
+// Payment Controller
+// =====================================================
 
 const pool = require('../config/db');
 
 /**
- * Auto-generate payment number (PAY-001, PAY-002, etc.)
+ * Get all payments
+ * GET /api/v1/payments
  */
-const generatePaymentNumber = async () => {
+const getAll = async (req, res) => {
   try {
+    const { page = 1, pageSize = 10, client_id, invoice_id } = req.query;
+    const offset = (page - 1) * pageSize;
+
+    let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
+    const params = [req.companyId];
+
+    if (client_id) {
+      whereClause += ` AND p.invoice_id IN (
+        SELECT id FROM invoices WHERE client_id = ?
+      )`;
+      params.push(client_id);
+    }
+    if (invoice_id) {
+      whereClause += ' AND p.invoice_id = ?';
+      params.push(invoice_id);
+    }
+
     const [payments] = await pool.execute(
-      'SELECT payment_no FROM payments ORDER BY id DESC LIMIT 1'
+      `SELECT p.*, i.invoice_number, c.company_name as client_name
+       FROM payments p
+       LEFT JOIN invoices i ON p.invoice_id = i.id
+       LEFT JOIN clients c ON i.client_id = c.id
+       ${whereClause}
+       ORDER BY p.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, parseInt(pageSize), offset]
     );
 
-    if (payments.length === 0) {
-      return 'PAY-001';
-    }
-
-    const latestPaymentNo = payments[0].payment_no;
-    const match = latestPaymentNo.match(/PAY-(\d+)/);
-    
-    if (match) {
-      const nextNumber = parseInt(match[1]) + 1;
-      return `PAY-${String(nextNumber).padStart(3, '0')}`;
-    }
-
-    return 'PAY-001';
-  } catch (error) {
-    console.error('Generate payment number error:', error);
-    return `PAY-${Date.now().toString().slice(-6)}`;
-  }
-};
-
-/**
- * Get all payments
- * GET /api/payments
- * Query params: paymentMode
- */
-const getAllPayments = async (req, res) => {
-  try {
-    const { paymentMode } = req.query;
-    
-    let query = `
-      SELECT 
-        p.id, p.payment_no, p.invoice_id, p.amount_paid,
-        p.payment_mode, p.payment_date, p.created_at, p.updated_at,
-        i.invoice_no, i.grand_total,
-        c.name AS customer_name
-      FROM payments p
-      LEFT JOIN invoices i ON p.invoice_id = i.id
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE 1=1
-    `;
-    const params = [];
-
-    if (paymentMode && paymentMode !== 'all') {
-      query += ' AND p.payment_mode = ?';
-      params.push(paymentMode);
-    }
-
-    query += ' ORDER BY p.created_at DESC';
-
-    const [payments] = await pool.execute(query, params);
-
-    // Calculate balance for each payment
-    const formattedPayments = await Promise.all(payments.map(async (p) => {
-      // Get total paid for this invoice
-      const [totalPaidResult] = await pool.execute(
-        'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-        [p.invoice_id]
-      );
-      const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-      const invoiceAmount = parseFloat(p.grand_total) || 0;
-      const balance = invoiceAmount - totalPaid;
-
-      return {
-        id: p.id,
-        paymentNo: p.payment_no,
-        invoiceNo: p.invoice_no,
-        customerName: p.customer_name,
-        invoiceAmount: invoiceAmount,
-        amountPaid: parseFloat(p.amount_paid) || 0,
-        balance: balance,
-        paymentMode: p.payment_mode,
-        paymentDate: p.payment_date ? p.payment_date.toISOString().split('T')[0] : null,
-        createdAt: p.created_at,
-        updatedAt: p.updated_at
-      };
-    }));
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM payments p ${whereClause}`,
+      params
+    );
 
     res.json({
       success: true,
-      data: formattedPayments,
-      count: formattedPayments.length
+      data: payments,
+      pagination: {
+        page: parseInt(page),
+        pageSize: parseInt(pageSize),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / pageSize)
+      }
     });
   } catch (error) {
-    console.error('Get all payments error:', error);
+    console.error('Get payments error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch payments'
@@ -107,24 +65,19 @@ const getAllPayments = async (req, res) => {
 
 /**
  * Get payment by ID
- * GET /api/payments/:id
+ * GET /api/v1/payments/:id
  */
-const getPaymentById = async (req, res) => {
+const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
     const [payments] = await pool.execute(
-      `SELECT 
-        p.id, p.payment_no, p.invoice_id, p.amount_paid,
-        p.payment_mode, p.payment_date, p.created_at, p.updated_at,
-        i.invoice_no, i.grand_total,
-        c.name AS customer_name
-      FROM payments p
-      LEFT JOIN invoices i ON p.invoice_id = i.id
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE p.id = ?`,
-      [id]
+      `SELECT p.*, i.invoice_number, c.company_name as client_name
+       FROM payments p
+       LEFT JOIN invoices i ON p.invoice_id = i.id
+       LEFT JOIN clients c ON i.client_id = c.id
+       WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
+      [id, req.companyId]
     );
 
     if (payments.length === 0) {
@@ -134,32 +87,9 @@ const getPaymentById = async (req, res) => {
       });
     }
 
-    const p = payments[0];
-    
-    // Calculate balance
-    const [totalPaidResult] = await pool.execute(
-      'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-      [p.invoice_id]
-    );
-    const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-    const invoiceAmount = parseFloat(p.grand_total) || 0;
-    const balance = invoiceAmount - totalPaid;
-
-    const formattedPayment = {
-      id: p.id,
-      paymentNo: p.payment_no,
-      invoiceNo: p.invoice_no,
-      customerName: p.customer_name,
-      invoiceAmount: invoiceAmount,
-      amountPaid: parseFloat(p.amount_paid) || 0,
-      balance: balance,
-      paymentMode: p.payment_mode,
-      paymentDate: p.payment_date ? p.payment_date.toISOString().split('T')[0] : null
-    };
-
     res.json({
       success: true,
-      data: formattedPayment
+      data: payments[0]
     });
   } catch (error) {
     console.error('Get payment by ID error:', error);
@@ -171,111 +101,71 @@ const getPaymentById = async (req, res) => {
 };
 
 /**
- * Create new payment
- * POST /api/payments
- * Body: { invoice, customerName, invoiceAmount, amountPaid, balanceAmount, paymentMode, paymentDate }
+ * Create single payment
+ * POST /api/v1/payments
  */
-const createPayment = async (req, res) => {
+const create = async (req, res) => {
   try {
-    const { invoice, customerName, invoiceAmount, amountPaid, balanceAmount, paymentMode, paymentDate } = req.body;
+    const {
+      project_id, invoice_id, paid_on, amount, currency, exchange_rate,
+      transaction_id, payment_gateway, offline_payment_method, bank_account,
+      receipt_path, remark, order_number
+    } = req.body;
 
-    // Validate required fields
-    if (!invoice || !amountPaid || !paymentMode) {
+    // Validation
+    if (!invoice_id || !paid_on || !amount) {
       return res.status(400).json({
         success: false,
-        error: 'Invoice, amount paid, and payment mode are required'
+        error: 'invoice_id, paid_on, and amount are required'
       });
     }
 
-    // Find invoice by invoice number
-    const [invoices] = await pool.execute(
-      'SELECT id, grand_total FROM invoices WHERE invoice_no = ?',
-      [invoice]
-    );
-
-    if (invoices.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Invoice not found'
-      });
-    }
-
-    const invoiceRecord = invoices[0];
-    const invoiceId = invoiceRecord.id;
-    const invoiceTotal = parseFloat(invoiceRecord.grand_total) || 0;
-
-    // Get total already paid
-    const [totalPaidResult] = await pool.execute(
-      'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-      [invoiceId]
-    );
-    const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-    const newAmountPaid = parseFloat(amountPaid) || 0;
-    const newTotalPaid = totalPaid + newAmountPaid;
-    const balance = invoiceTotal - newTotalPaid;
-
-    // Generate payment number
-    const paymentNo = await generatePaymentNumber();
-
-    // Insert payment
+    // Insert payment - convert undefined to null for SQL
     const [result] = await pool.execute(
       `INSERT INTO payments (
-        payment_no, invoice_id, amount_paid, payment_mode, payment_date, created_at
-      ) VALUES (?, ?, ?, ?, ?, NOW())`,
+        company_id, project_id, invoice_id, paid_on, amount, currency,
+        exchange_rate, transaction_id, payment_gateway, offline_payment_method,
+        bank_account, receipt_path, remark, order_number, status, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        paymentNo,
-        invoiceId,
-        newAmountPaid,
-        paymentMode,
-        paymentDate || new Date().toISOString().split('T')[0]
+        req.companyId ?? null,
+        project_id ?? null,
+        invoice_id,
+        paid_on,
+        amount,
+        currency || 'USD',
+        exchange_rate ?? 1.0,
+        transaction_id ?? null,
+        payment_gateway ?? null,
+        offline_payment_method ?? null,
+        bank_account ?? null,
+        receipt_path ?? null,
+        remark ?? null,
+        order_number ?? null,
+        'Complete',
+        req.userId ?? null
       ]
     );
 
-    // Update invoice status based on balance
-    let invoiceStatus = 'Unpaid';
-    if (balance <= 0) {
-      invoiceStatus = 'Paid';
-    } else if (newTotalPaid > 0) {
-      invoiceStatus = 'Partially Paid';
-    }
-
+    // Update invoice paid/unpaid amounts
     await pool.execute(
-      'UPDATE invoices SET status = ?, updated_at = NOW() WHERE id = ?',
-      [invoiceStatus, invoiceId]
+      `UPDATE invoices SET
+        paid = paid + ?,
+        unpaid = unpaid - ?,
+        status = CASE
+          WHEN unpaid - ? <= 0 THEN 'Paid'
+          WHEN paid + ? > 0 AND unpaid - ? > 0 THEN 'Partially Paid'
+          ELSE status
+        END,
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [amount, amount, amount, amount, amount, invoice_id]
     );
-
-    // Fetch created payment
-    const [payments] = await pool.execute(
-      `SELECT 
-        p.id, p.payment_no, p.invoice_id, p.amount_paid,
-        p.payment_mode, p.payment_date, p.created_at, p.updated_at,
-        i.invoice_no, i.grand_total,
-        c.name AS customer_name
-      FROM payments p
-      LEFT JOIN invoices i ON p.invoice_id = i.id
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE p.id = ?`,
-      [result.insertId]
-    );
-
-    const p = payments[0];
-    const formattedPayment = {
-      id: p.id,
-      paymentNo: p.payment_no,
-      invoiceNo: p.invoice_no,
-      customerName: p.customer_name,
-      invoiceAmount: parseFloat(p.grand_total) || 0,
-      amountPaid: parseFloat(p.amount_paid) || 0,
-      balance: balance,
-      paymentMode: p.payment_mode,
-      paymentDate: p.payment_date ? p.payment_date.toISOString().split('T')[0] : null
-    };
 
     res.status(201).json({
       success: true,
-      message: 'Payment recorded successfully',
-      data: formattedPayment
+      data: { id: result.insertId },
+      message: 'Payment recorded successfully'
     });
   } catch (error) {
     console.error('Create payment error:', error);
@@ -287,128 +177,155 @@ const createPayment = async (req, res) => {
 };
 
 /**
- * Update payment
- * PUT /api/payments/:id
+ * Create bulk payments
+ * POST /api/v1/payments/bulk
  */
-const updatePayment = async (req, res) => {
+const createBulk = async (req, res) => {
+  try {
+    const { payments } = req.body;
+
+    if (!payments || !Array.isArray(payments) || payments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'payments array is required'
+      });
+    }
+
+    const createdPayments = [];
+
+    for (const payment of payments) {
+      const {
+        invoice_id, payment_date, payment_method, offline_payment_method,
+        bank_account, transaction_id, amount_received
+      } = payment;
+
+      if (!invoice_id || !payment_date || !amount_received) {
+        continue; // Skip invalid payments
+      }
+
+      // Insert payment - convert undefined to null for SQL
+      const [result] = await pool.execute(
+        `INSERT INTO payments (
+          company_id, invoice_id, paid_on, amount, currency, exchange_rate,
+          transaction_id, payment_gateway, offline_payment_method, bank_account,
+          status, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          req.companyId ?? null,
+          invoice_id,
+          payment_date,
+          amount_received,
+          'USD',
+          1.0,
+          transaction_id ?? null,
+          payment_method ?? null,
+          offline_payment_method ?? null,
+          bank_account ?? null,
+          'Complete',
+          req.userId ?? null
+        ]
+      );
+
+      // Update invoice
+      await pool.execute(
+        `UPDATE invoices SET
+          paid = paid + ?,
+          unpaid = unpaid - ?,
+          status = CASE
+            WHEN unpaid - ? <= 0 THEN 'Paid'
+            WHEN paid + ? > 0 AND unpaid - ? > 0 THEN 'Partially Paid'
+            ELSE status
+          END,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [amount_received, amount_received, amount_received, amount_received, amount_received, invoice_id]
+      );
+
+      createdPayments.push({ id: result.insertId, invoice_id });
+    }
+
+    res.status(201).json({
+      success: true,
+      data: createdPayments,
+      message: `${createdPayments.length} payments recorded successfully`
+    });
+  } catch (error) {
+    console.error('Create bulk payments error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to record bulk payments'
+    });
+  }
+};
+
+/**
+ * Update payment
+ * PUT /api/v1/payments/:id
+ */
+const update = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amountPaid, paymentMode, paymentDate } = req.body;
+    const updateFields = req.body;
 
-    // Check if payment exists
-    const [existingPayments] = await pool.execute(
-      'SELECT id, invoice_id, amount_paid FROM payments WHERE id = ?',
-      [id]
+    // Get payment to get invoice_id
+    const [payments] = await pool.execute(
+      `SELECT invoice_id, amount FROM payments WHERE id = ? AND company_id = ?`,
+      [id, req.companyId]
     );
 
-    if (existingPayments.length === 0) {
+    if (payments.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Payment not found'
       });
     }
 
-    const existing = existingPayments[0];
+    const oldPayment = payments[0];
 
     // Build update query
+    const allowedFields = [
+      'paid_on', 'amount', 'currency', 'exchange_rate', 'transaction_id',
+      'payment_gateway', 'offline_payment_method', 'bank_account',
+      'receipt_path', 'remark', 'status'
+    ];
+
     const updates = [];
-    const params = [];
+    const values = [];
 
-    if (amountPaid !== undefined) {
-      updates.push('amount_paid = ?');
-      params.push(parseFloat(amountPaid));
-    }
-    if (paymentMode) {
-      updates.push('payment_mode = ?');
-      params.push(paymentMode);
-    }
-    if (paymentDate) {
-      updates.push('payment_date = ?');
-      params.push(paymentDate);
-    }
-
-    if (updates.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'No fields to update'
-      });
-    }
-
-    updates.push('updated_at = NOW()');
-    params.push(id);
-
-    await pool.execute(
-      `UPDATE payments SET ${updates.join(', ')} WHERE id = ?`,
-      params
-    );
-
-    // Update invoice status
-    const [invoiceResult] = await pool.execute(
-      'SELECT grand_total FROM invoices WHERE id = ?',
-      [existing.invoice_id]
-    );
-    
-    if (invoiceResult.length > 0) {
-      const invoiceTotal = parseFloat(invoiceResult[0].grand_total) || 0;
-      const [totalPaidResult] = await pool.execute(
-        'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-        [existing.invoice_id]
-      );
-      const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-      const balance = invoiceTotal - totalPaid;
-
-      let invoiceStatus = 'Unpaid';
-      if (balance <= 0) {
-        invoiceStatus = 'Paid';
-      } else if (totalPaid > 0) {
-        invoiceStatus = 'Partially Paid';
+    for (const field of allowedFields) {
+      if (updateFields.hasOwnProperty(field)) {
+        updates.push(`${field} = ?`);
+        // Convert undefined to null for SQL
+        values.push(updateFields[field] === undefined ? null : updateFields[field]);
       }
+    }
+
+    if (updates.length > 0) {
+      updates.push('updated_at = CURRENT_TIMESTAMP');
+      values.push(id, req.companyId);
 
       await pool.execute(
-        'UPDATE invoices SET status = ?, updated_at = NOW() WHERE id = ?',
-        [invoiceStatus, existing.invoice_id]
+        `UPDATE payments SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        values
       );
+
+      // If amount changed, update invoice
+      if (updateFields.amount && updateFields.amount !== oldPayment.amount) {
+        const amountDiff = updateFields.amount - oldPayment.amount;
+        await pool.execute(
+          `UPDATE invoices SET
+            paid = paid + ?,
+            unpaid = unpaid - ?,
+            updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [amountDiff, amountDiff, oldPayment.invoice_id]
+        );
+      }
     }
-
-    // Fetch updated payment
-    const [payments] = await pool.execute(
-      `SELECT 
-        p.id, p.payment_no, p.invoice_id, p.amount_paid,
-        p.payment_mode, p.payment_date, p.created_at, p.updated_at,
-        i.invoice_no, i.grand_total,
-        c.name AS customer_name
-      FROM payments p
-      LEFT JOIN invoices i ON p.invoice_id = i.id
-      LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-      LEFT JOIN customers c ON jc.customer_id = c.id
-      WHERE p.id = ?`,
-      [id]
-    );
-
-    const p = payments[0];
-    const [totalPaidResult] = await pool.execute(
-      'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-      [p.invoice_id]
-    );
-    const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-    const balance = parseFloat(p.grand_total) - totalPaid;
-
-    const formattedPayment = {
-      id: p.id,
-      paymentNo: p.payment_no,
-      invoiceNo: p.invoice_no,
-      customerName: p.customer_name,
-      invoiceAmount: parseFloat(p.grand_total) || 0,
-      amountPaid: parseFloat(p.amount_paid) || 0,
-      balance: balance,
-      paymentMode: p.payment_mode,
-      paymentDate: p.payment_date ? p.payment_date.toISOString().split('T')[0] : null
-    };
 
     res.json({
       success: true,
-      message: 'Payment updated successfully',
-      data: formattedPayment
+      message: 'Payment updated successfully'
     });
   } catch (error) {
     console.error('Update payment error:', error);
@@ -421,16 +338,16 @@ const updatePayment = async (req, res) => {
 
 /**
  * Delete payment
- * DELETE /api/payments/:id
+ * DELETE /api/v1/payments/:id
  */
 const deletePayment = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if payment exists and get invoice_id
+    // Get payment
     const [payments] = await pool.execute(
-      'SELECT id, invoice_id FROM payments WHERE id = ?',
-      [id]
+      `SELECT invoice_id, amount FROM payments WHERE id = ? AND company_id = ?`,
+      [id, req.companyId]
     );
 
     if (payments.length === 0) {
@@ -440,38 +357,24 @@ const deletePayment = async (req, res) => {
       });
     }
 
-    const invoiceId = payments[0].invoice_id;
+    const payment = payments[0];
 
     // Delete payment
-    await pool.execute('DELETE FROM payments WHERE id = ?', [id]);
-
-    // Update invoice status
-    const [invoiceResult] = await pool.execute(
-      'SELECT grand_total FROM invoices WHERE id = ?',
-      [invoiceId]
+    await pool.execute(
+      `UPDATE payments SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND company_id = ?`,
+      [id, req.companyId]
     );
-    
-    if (invoiceResult.length > 0) {
-      const invoiceTotal = parseFloat(invoiceResult[0].grand_total) || 0;
-      const [totalPaidResult] = await pool.execute(
-        'SELECT COALESCE(SUM(amount_paid), 0) AS total_paid FROM payments WHERE invoice_id = ?',
-        [invoiceId]
-      );
-      const totalPaid = parseFloat(totalPaidResult[0].total_paid) || 0;
-      const balance = invoiceTotal - totalPaid;
 
-      let invoiceStatus = 'Unpaid';
-      if (balance <= 0) {
-        invoiceStatus = 'Paid';
-      } else if (totalPaid > 0) {
-        invoiceStatus = 'Partially Paid';
-      }
-
-      await pool.execute(
-        'UPDATE invoices SET status = ?, updated_at = NOW() WHERE id = ?',
-        [invoiceStatus, invoiceId]
-      );
-    }
+    // Update invoice
+    await pool.execute(
+      `UPDATE invoices SET
+        paid = paid - ?,
+        unpaid = unpaid + ?,
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [payment.amount, payment.amount, payment.invoice_id]
+    );
 
     res.json({
       success: true,
@@ -486,64 +389,13 @@ const deletePayment = async (req, res) => {
   }
 };
 
-/**
- * Get payment statistics
- * GET /api/payments/stats/summary
- */
-const getPaymentStats = async (req, res) => {
-  try {
-    // Total payments
-    const [totalResult] = await pool.execute(
-      'SELECT COALESCE(SUM(amount_paid), 0) AS total_payments FROM payments'
-    );
-    const totalPayments = parseFloat(totalResult[0].total_payments) || 0;
-
-    // Pending payments (invoices with balance > 0)
-    const [pendingResult] = await pool.execute(
-      `SELECT COALESCE(SUM(i.grand_total - COALESCE(SUM(p.amount_paid), 0)), 0) AS pending
-       FROM invoices i
-       LEFT JOIN payments p ON i.id = p.invoice_id
-       WHERE i.status IN ('Unpaid', 'Partially Paid')
-       GROUP BY i.id`
-    );
-    
-    let pendingPayments = 0;
-    if (pendingResult.length > 0) {
-      pendingPayments = pendingResult.reduce((sum, row) => sum + (parseFloat(row.pending) || 0), 0);
-    }
-
-    // Credit customers count (customers with unpaid invoices)
-    const [creditResult] = await pool.execute(
-      `SELECT COUNT(DISTINCT jc.customer_id) AS credit_customers
-       FROM invoices i
-       LEFT JOIN job_cards jc ON i.job_card_id = jc.id
-       WHERE i.status IN ('Unpaid', 'Partially Paid')`
-    );
-    const creditCustomers = parseInt(creditResult[0].credit_customers) || 0;
-
-    res.json({
-      success: true,
-      data: {
-        totalPayments: totalPayments,
-        pendingPayments: pendingPayments,
-        creditCustomers: creditCustomers
-      }
-    });
-  } catch (error) {
-    console.error('Get payment stats error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch payment statistics'
-    });
-  }
-};
-
 module.exports = {
-  getAllPayments,
-  getPaymentById,
-  createPayment,
-  updatePayment,
-  deletePayment,
-  getPaymentStats
+  getAll,
+  getById,
+  getAll,
+  create,
+  createBulk,
+  update,
+  delete: deletePayment
 };
 

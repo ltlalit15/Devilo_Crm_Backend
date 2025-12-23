@@ -1,203 +1,73 @@
-/**
- * Settings Controller
- * CRUD operations for workshop settings
- */
-
 const pool = require('../config/db');
 
-/**
- * Get workshop settings
- * GET /api/settings
- */
-const getSettings = async (req, res) => {
+const get = async (req, res) => {
   try {
-    // Check if settings exist
     const [settings] = await pool.execute(
-      'SELECT * FROM settings WHERE id = 1'
+      `SELECT * FROM system_settings WHERE company_id = ? OR company_id IS NULL`,
+      [req.companyId]
     );
+    res.json({ success: true, data: settings });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch settings' });
+  }
+};
 
-    if (settings.length === 0) {
-      // Return default settings if none exist
-      const defaultSettings = {
-        workshopName: 'ABC Workshop',
-        workshopAddress: '123 Main Street, Mumbai',
-        workshopPhone: '+91 98765 43210',
-        workshopEmail: 'info@workshop.com',
-        vatPercentage: 18,
-        invoiceFormat: 'Standard',
-        language: 'English',
-        dataBackup: 'Enabled',
-        jobStatusReceived: 'Received',
-        jobStatusUnderRepair: 'Under Repair',
-        jobStatusTesting: 'Testing',
-        jobStatusCompleted: 'Completed',
-        jobStatusDelivered: 'Delivered',
-      };
-
-      return res.json({
-        success: true,
-        data: defaultSettings
+const update = async (req, res) => {
+  try {
+    let setting_key, setting_value;
+    
+    // Handle file upload (multipart/form-data)
+    if (req.file) {
+      // File was uploaded
+      setting_key = req.body.setting_key || 'logo';
+      // Store file path relative to uploads directory
+      setting_value = `/uploads/${req.file.filename}`;
+    } else {
+      // Regular JSON data
+      setting_key = req.body.setting_key;
+      setting_value = req.body.setting_value;
+    }
+    
+    // Validate required fields
+    if (!setting_key) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'setting_key is required' 
       });
     }
-
-    const setting = settings[0];
-    const formattedSettings = {
-      workshopName: setting.workshop_name || 'ABC Workshop',
-      workshopAddress: setting.workshop_address || '123 Main Street, Mumbai',
-      workshopPhone: setting.workshop_phone || '+91 98765 43210',
-      workshopEmail: setting.workshop_email || 'info@workshop.com',
-      vatPercentage: setting.vat_percentage || 18,
-      invoiceFormat: setting.invoice_format || 'Standard',
-      language: setting.language || 'English',
-      dataBackup: setting.data_backup || 'Enabled',
-      jobStatusLabels: {
-        received: setting.job_status_received || 'Received',
-        underRepair: setting.job_status_under_repair || 'Under Repair',
-        testing: setting.job_status_testing || 'Testing',
-        completed: setting.job_status_completed || 'Completed',
-        delivered: setting.job_status_delivered || 'Delivered',
-      },
-    };
-
-    res.json({
-      success: true,
-      data: formattedSettings
-    });
-  } catch (error) {
-    console.error('Get settings error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch settings'
-    });
-  }
-};
-
-/**
- * Update workshop settings
- * PUT /api/settings
- */
-const updateSettings = async (req, res) => {
-  try {
-    const {
-      workshopName,
-      workshopAddress,
-      workshopPhone,
-      workshopEmail,
-      vatPercentage,
-      invoiceFormat,
-      language,
-      dataBackup,
-      jobStatusLabels
-    } = req.body;
-
-    // Check if settings exist
-    const [existing] = await pool.execute(
-      'SELECT id FROM settings WHERE id = 1'
-    );
-
-    if (existing.length === 0) {
-      // Create new settings
-      await pool.execute(
-        `INSERT INTO settings (
-          id, workshop_name, workshop_address, workshop_phone, workshop_email,
-          vat_percentage, invoice_format, language, data_backup,
-          job_status_received, job_status_under_repair, job_status_testing,
-          job_status_completed, job_status_delivered, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [
-          1,
-          workshopName || 'ABC Workshop',
-          workshopAddress || '',
-          workshopPhone || '',
-          workshopEmail || '',
-          vatPercentage || 18,
-          invoiceFormat || 'Standard',
-          language || 'English',
-          dataBackup || 'Enabled',
-          jobStatusLabels?.received || 'Received',
-          jobStatusLabels?.underRepair || 'Under Repair',
-          jobStatusLabels?.testing || 'Testing',
-          jobStatusLabels?.completed || 'Completed',
-          jobStatusLabels?.delivered || 'Delivered',
-        ]
-      );
-    } else {
-      // Update existing settings
-      await pool.execute(
-        `UPDATE settings SET
-          workshop_name = ?,
-          workshop_address = ?,
-          workshop_phone = ?,
-          workshop_email = ?,
-          vat_percentage = ?,
-          invoice_format = ?,
-          language = ?,
-          data_backup = ?,
-          job_status_received = ?,
-          job_status_under_repair = ?,
-          job_status_testing = ?,
-          job_status_completed = ?,
-          job_status_delivered = ?,
-          updated_at = NOW()
-        WHERE id = 1`,
-        [
-          workshopName || 'ABC Workshop',
-          workshopAddress || '',
-          workshopPhone || '',
-          workshopEmail || '',
-          vatPercentage || 18,
-          invoiceFormat || 'Standard',
-          language || 'English',
-          dataBackup || 'Enabled',
-          jobStatusLabels?.received || 'Received',
-          jobStatusLabels?.underRepair || 'Under Repair',
-          jobStatusLabels?.testing || 'Testing',
-          jobStatusLabels?.completed || 'Completed',
-          jobStatusLabels?.delivered || 'Delivered',
-        ]
-      );
+    
+    // Check if companyId exists
+    if (!req.companyId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Company ID is required. Please ensure you are logged in with a valid company account.' 
+      });
     }
-
-    // Fetch updated settings
-    const [updated] = await pool.execute(
-      'SELECT * FROM settings WHERE id = 1'
+    
+    await pool.execute(
+      `INSERT INTO system_settings (company_id, setting_key, setting_value)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = ?`,
+      [req.companyId, setting_key, setting_value, setting_value]
     );
-
-    const setting = updated[0];
-    const formattedSettings = {
-      workshopName: setting.workshop_name,
-      workshopAddress: setting.workshop_address,
-      workshopPhone: setting.workshop_phone,
-      workshopEmail: setting.workshop_email,
-      vatPercentage: setting.vat_percentage,
-      invoiceFormat: setting.invoice_format,
-      language: setting.language,
-      dataBackup: setting.data_backup,
-      jobStatusLabels: {
-        received: setting.job_status_received,
-        underRepair: setting.job_status_under_repair,
-        testing: setting.job_status_testing,
-        completed: setting.job_status_completed,
-        delivered: setting.job_status_delivered,
-      },
-    };
-
-    res.json({
-      success: true,
-      message: 'Settings updated successfully',
-      data: formattedSettings
+    
+    res.json({ 
+      success: true, 
+      message: 'Settings updated',
+      data: {
+        setting_key,
+        setting_value
+      }
     });
   } catch (error) {
-    console.error('Update settings error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update settings'
+    console.error('Settings update error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update settings',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
 
-module.exports = {
-  getSettings,
-  updateSettings
-};
+module.exports = { get, update };
 
