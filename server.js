@@ -35,6 +35,7 @@ const settingsRoutes = require('./routes/settingsRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const companyPackageRoutes = require('./routes/companyPackageRoutes');
 const companyRoutes = require('./routes/companyRoutes');
+const documentRoutes = require('./routes/documentRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -116,6 +117,7 @@ app.use(`${apiBase}/custom-fields`, customFieldRoutes);
 app.use(`${apiBase}/settings`, settingsRoutes);
 app.use(`${apiBase}/company-packages`, companyPackageRoutes);
 app.use(`${apiBase}/companies`, companyRoutes);
+app.use(`${apiBase}/documents`, documentRoutes);
 
 // 404 handler
 app.use((req, res) => {

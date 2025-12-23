@@ -12,8 +12,6 @@ const getAll = async (req, res) => {
   }
 };
 
-
-
 const checkIn = async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];

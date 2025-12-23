@@ -42,8 +42,7 @@ const calculateTotals = (items, discount, discountType) => {
 
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status } = req.query;
 
     let whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
     const params = [req.companyId];
@@ -56,9 +55,8 @@ const getAll = async (req, res) => {
     const [expenses] = await pool.execute(
       `SELECT e.* FROM expenses e
        ${whereClause}
-       ORDER BY e.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
+       ORDER BY e.created_at DESC`,
+      params
     );
 
     // Get items for each expense
@@ -70,21 +68,9 @@ const getAll = async (req, res) => {
       expense.items = items;
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM expenses e ${whereClause}`,
-      params
-    );
-
     res.json({
       success: true,
-      data: expenses,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: expenses
     });
   } catch (error) {
     console.error('Get expenses error:', error);

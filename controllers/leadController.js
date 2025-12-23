@@ -10,8 +10,7 @@ const pool = require('../config/db');
  */
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status, owner_id, source, city } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status, owner_id, source, city } = req.query;
 
     let whereClause = 'WHERE l.company_id = ? AND l.is_deleted = 0';
     const params = [req.companyId];
@@ -39,14 +38,7 @@ const getAll = async (req, res) => {
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
        ${whereClause}
-       ORDER BY l.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM leads l ${whereClause}`,
+       ORDER BY l.created_at DESC`,
       params
     );
 
@@ -69,13 +61,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: leads,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: leads
     });
   } catch (error) {
     console.error('Get leads error:', error);

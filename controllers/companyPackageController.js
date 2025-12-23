@@ -18,8 +18,7 @@ const getAll = async (req, res) => {
       });
     }
 
-    const { page = 1, pageSize = 100, status } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status } = req.query;
 
     let whereClause = 'WHERE cp.company_id = ? AND cp.is_deleted = 0';
     const params = [req.companyId];
@@ -36,9 +35,8 @@ const getAll = async (req, res) => {
        LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
        ${whereClause}
        GROUP BY cp.id
-       ORDER BY cp.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
+       ORDER BY cp.created_at DESC`,
+      params
     );
 
     // Parse JSON features safely
@@ -57,21 +55,9 @@ const getAll = async (req, res) => {
       }
     });
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM company_packages cp ${whereClause}`,
-      params
-    );
-
     res.json({
       success: true,
-      data: packagesWithFeatures,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: packagesWithFeatures
     });
   } catch (error) {
     console.error('Get company packages error:', error);

@@ -15,17 +15,13 @@ const generateEstimateNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10 } = req.query;
-    const offset = (page - 1) * pageSize;
-
     const [estimates] = await pool.execute(
       `SELECT e.*, c.company_name as client_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
        WHERE e.company_id = ? AND e.is_deleted = 0
-       ORDER BY e.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [req.companyId, parseInt(pageSize), offset]
+       ORDER BY e.created_at DESC`,
+      [req.companyId]
     );
 
     for (let estimate of estimates) {

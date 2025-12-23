@@ -8,8 +8,7 @@ const generateContractNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status } = req.query;
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
     const params = [req.companyId];
@@ -24,26 +23,13 @@ const getAll = async (req, res) => {
        FROM contracts c
        LEFT JOIN clients cl ON c.client_id = cl.id
        ${whereClause}
-       ORDER BY c.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM contracts c ${whereClause}`,
+       ORDER BY c.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: contracts,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: contracts
     });
   } catch (error) {
     console.error('Get contracts error:', error);

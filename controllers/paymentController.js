@@ -10,8 +10,7 @@ const pool = require('../config/db');
  */
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, client_id, invoice_id } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { client_id, invoice_id } = req.query;
 
     let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
     const params = [req.companyId];
@@ -33,26 +32,13 @@ const getAll = async (req, res) => {
        LEFT JOIN invoices i ON p.invoice_id = i.id
        LEFT JOIN clients c ON i.client_id = c.id
        ${whereClause}
-       ORDER BY p.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM payments p ${whereClause}`,
+       ORDER BY p.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: payments,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: payments
     });
   } catch (error) {
     console.error('Get payments error:', error);

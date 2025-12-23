@@ -10,8 +10,7 @@ const pool = require('../config/db');
  */
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status, client_id } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status, client_id } = req.query;
 
     let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
     const params = [req.companyId];
@@ -30,9 +29,8 @@ const getAll = async (req, res) => {
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
        ${whereClause}
-       ORDER BY p.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
+       ORDER BY p.created_at DESC`,
+      params
     );
 
     // Get members for each project
@@ -46,21 +44,9 @@ const getAll = async (req, res) => {
       project.members = members;
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM projects p ${whereClause}`,
-      params
-    );
-
     res.json({
       success: true,
-      data: projects,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: projects
     });
   } catch (error) {
     console.error('Get projects error:', error);

@@ -3,8 +3,7 @@ const bcrypt = require('bcryptjs');
 
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status, department } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status, department } = req.query;
 
     let whereClause = 'WHERE u.company_id = ? AND u.is_deleted = 0';
     const params = [req.companyId];
@@ -25,28 +24,13 @@ const getAll = async (req, res) => {
        LEFT JOIN departments d ON e.department_id = d.id
        LEFT JOIN positions p ON e.position_id = p.id
        ${whereClause}
-       ORDER BY e.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM employees e
-       JOIN users u ON e.user_id = u.id
-       ${whereClause}`,
+       ORDER BY e.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: employees,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: employees
     });
   } catch (error) {
     console.error('Get employees error:', error);

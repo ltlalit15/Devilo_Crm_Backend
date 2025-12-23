@@ -11,8 +11,7 @@ const bcrypt = require('bcryptjs');
  */
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status, search } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status, search } = req.query;
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
     const params = [req.companyId];
@@ -32,14 +31,7 @@ const getAll = async (req, res) => {
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
        ${whereClause}
-       ORDER BY c.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM clients c ${whereClause}`,
+       ORDER BY c.created_at DESC`,
       params
     );
 
@@ -66,13 +58,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: clients,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: clients
     });
   } catch (error) {
     console.error('Get clients error:', error);

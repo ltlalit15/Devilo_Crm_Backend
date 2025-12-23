@@ -142,9 +142,15 @@ const logout = async (req, res) => {
 const getCurrentUser = async (req, res) => {
   try {
     const [users] = await pool.execute(
-      `SELECT id, company_id, name, email, role, status, avatar, phone, address, created_at 
-       FROM users 
-       WHERE id = ? AND is_deleted = 0`,
+      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address, u.created_at,
+              e.department_id, e.position_id,
+              d.name as department_name,
+              p.name as position_name
+       FROM users u
+       LEFT JOIN employees e ON u.id = e.user_id
+       LEFT JOIN departments d ON e.department_id = d.id
+       LEFT JOIN positions p ON e.position_id = p.id
+       WHERE u.id = ? AND u.is_deleted = 0`,
       [req.userId]
     );
 
@@ -155,9 +161,28 @@ const getCurrentUser = async (req, res) => {
       });
     }
 
+    const user = users[0];
+    // Format response
+    const userData = {
+      id: user.id,
+      company_id: user.company_id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      avatar: user.avatar,
+      phone: user.phone,
+      address: user.address,
+      department_id: user.department_id,
+      department: user.department_name,
+      position_id: user.position_id,
+      position: user.position_name,
+      created_at: user.created_at
+    };
+
     res.json({
       success: true,
-      data: users[0]
+      data: userData
     });
   } catch (error) {
     console.error('Get current user error:', error);
@@ -168,9 +193,110 @@ const getCurrentUser = async (req, res) => {
   }
 };
 
+/**
+ * Update current user profile
+ * PUT /api/v1/auth/me
+ */
+const updateCurrentUser = async (req, res) => {
+  try {
+    const { name, email, phone, address } = req.body;
+
+    // Build update fields
+    const updateFields = [];
+    const updateValues = [];
+
+    if (name !== undefined) {
+      updateFields.push('name = ?');
+      updateValues.push(name);
+    }
+    if (email !== undefined) {
+      // Check if email already exists for another user
+      const [existingUsers] = await pool.execute(
+        `SELECT id FROM users WHERE email = ? AND id != ? AND company_id = ?`,
+        [email, req.userId, req.companyId]
+      );
+      if (existingUsers.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email already exists'
+        });
+      }
+      updateFields.push('email = ?');
+      updateValues.push(email);
+    }
+    if (phone !== undefined) {
+      updateFields.push('phone = ?');
+      updateValues.push(phone);
+    }
+    if (address !== undefined) {
+      updateFields.push('address = ?');
+      updateValues.push(address);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No fields to update'
+      });
+    }
+
+    updateValues.push(req.userId);
+
+    await pool.execute(
+      `UPDATE users SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      updateValues
+    );
+
+    // Get updated user
+    const [users] = await pool.execute(
+      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address, u.created_at,
+              e.department_id, e.position_id,
+              d.name as department_name,
+              p.name as position_name
+       FROM users u
+       LEFT JOIN employees e ON u.id = e.user_id
+       LEFT JOIN departments d ON e.department_id = d.id
+       LEFT JOIN positions p ON e.position_id = p.id
+       WHERE u.id = ? AND u.is_deleted = 0`,
+      [req.userId]
+    );
+
+    const user = users[0];
+    const userData = {
+      id: user.id,
+      company_id: user.company_id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      avatar: user.avatar,
+      phone: user.phone,
+      address: user.address,
+      department_id: user.department_id,
+      department: user.department_name,
+      position_id: user.position_id,
+      position: user.position_name,
+      created_at: user.created_at
+    };
+
+    res.json({
+      success: true,
+      data: userData,
+      message: 'Profile updated successfully'
+    });
+  } catch (error) {
+    console.error('Update current user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update profile'
+    });
+  }
+};
+
 module.exports = {
   login,
   logout,
-  getCurrentUser
+  getCurrentUser,
+  updateCurrentUser
 };
 

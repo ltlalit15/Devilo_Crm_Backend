@@ -14,8 +14,7 @@ const getAll = async (req, res) => {
     // For super admin, they might want to see all companies
     // For regular admin, they see only their company
     
-    const { page = 1, pageSize = 100, search } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { search } = req.query;
 
     let whereClause = 'WHERE is_deleted = 0';
     const params = [];
@@ -32,26 +31,13 @@ const getAll = async (req, res) => {
     const [companies] = await pool.execute(
       `SELECT * FROM companies 
        ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM companies ${whereClause}`,
+       ORDER BY created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: companies,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: companies
     });
   } catch (error) {
     console.error('Get companies error:', error);

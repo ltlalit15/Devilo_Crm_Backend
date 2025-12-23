@@ -2,8 +2,7 @@ const pool = require('../config/db');
 
 const getAll = async (req, res) => {
   try {
-    const { page = 1, pageSize = 10, status } = req.query;
-    const offset = (page - 1) * pageSize;
+    const { status } = req.query;
 
     let whereClause = 'WHERE s.company_id = ? AND s.is_deleted = 0';
     const params = [req.companyId];
@@ -18,26 +17,13 @@ const getAll = async (req, res) => {
        FROM subscriptions s
        LEFT JOIN clients c ON s.client_id = c.id
        ${whereClause}
-       ORDER BY s.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(pageSize), offset]
-    );
-
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM subscriptions s ${whereClause}`,
+       ORDER BY s.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: subscriptions,
-      pagination: {
-        page: parseInt(page),
-        pageSize: parseInt(pageSize),
-        total: countResult[0].total,
-        totalPages: Math.ceil(countResult[0].total / pageSize)
-      }
+      data: subscriptions
     });
   } catch (error) {
     console.error('Get subscriptions error:', error);
