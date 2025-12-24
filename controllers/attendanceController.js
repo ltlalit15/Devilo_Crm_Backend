@@ -3,11 +3,28 @@ const pool = require('../config/db');
 const getAll = async (req, res) => {
   try {
     const [attendance] = await pool.execute(
-      `SELECT * FROM attendance WHERE company_id = ? ORDER BY date DESC`,
+      `SELECT 
+        a.id,
+        a.company_id,
+        a.user_id,
+        a.date,
+        a.check_in,
+        a.check_out,
+        a.status,
+        a.notes,
+        a.created_at,
+        a.updated_at,
+        u.name as employee_name,
+        u.email as employee_email
+      FROM attendance a
+      JOIN users u ON a.user_id = u.id
+      WHERE a.company_id = ? AND u.is_deleted = 0
+      ORDER BY a.date DESC, u.name ASC`,
       [req.companyId]
     );
     res.json({ success: true, data: attendance });
   } catch (error) {
+    console.error('Get attendance error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch attendance' });
   }
 };

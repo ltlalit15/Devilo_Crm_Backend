@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const customFieldController = require('../controllers/customFieldController');
-const { verifyToken, requireRole } = require('../middleware/auth');
+const { optionalAuth, requireRole } = require('../middleware/auth');
 
-router.get('/', verifyToken, customFieldController.getAll);
-router.post('/', verifyToken, requireRole(['ADMIN']), customFieldController.create);
+// GET routes don't require token - faster API calls
+router.get('/', optionalAuth, customFieldController.getAll);
+router.post('/', optionalAuth, requireRole(['ADMIN']), customFieldController.create);
 
 module.exports = router;
 

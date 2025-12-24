@@ -30,11 +30,9 @@ const getAll = async (req, res) => {
 
     const [packages] = await pool.execute(
       `SELECT cp.*, 
-              COUNT(DISTINCT c.id) as companies_count
+              0 as companies_count
        FROM company_packages cp
-       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
        ${whereClause}
-       GROUP BY cp.id
        ORDER BY cp.created_at DESC`,
       params
     );
@@ -84,11 +82,9 @@ const getById = async (req, res) => {
 
     const [packages] = await pool.execute(
       `SELECT cp.*, 
-              COUNT(DISTINCT c.id) as companies_count
+              0 as companies_count
        FROM company_packages cp
-       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
-       WHERE cp.id = ? AND cp.company_id = ? AND cp.is_deleted = 0
-       GROUP BY cp.id`,
+       WHERE cp.id = ? AND cp.company_id = ? AND cp.is_deleted = 0`,
       [id, req.companyId]
     );
 
@@ -242,11 +238,9 @@ const update = async (req, res) => {
 
     const [updated] = await pool.execute(
       `SELECT cp.*, 
-              COUNT(DISTINCT c.id) as companies_count
+              0 as companies_count
        FROM company_packages cp
-       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
-       WHERE cp.id = ? AND cp.company_id = ?
-       GROUP BY cp.id`,
+       WHERE cp.id = ? AND cp.company_id = ?`,
       [id, req.companyId]
     );
 

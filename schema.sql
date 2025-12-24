@@ -54,11 +54,14 @@ CREATE TABLE `companies` (
   `logo` VARCHAR(500) NULL,
   `currency` VARCHAR(10) DEFAULT 'USD',
   `timezone` VARCHAR(50) DEFAULT 'UTC',
+  `package_id` INT UNSIGNED NULL,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `is_deleted` TINYINT(1) DEFAULT 0,
   INDEX `idx_company_name` (`name`),
-  INDEX `idx_company_deleted` (`is_deleted`)
+  INDEX `idx_company_deleted` (`is_deleted`),
+  INDEX `idx_company_package` (`package_id`),
+  FOREIGN KEY (`package_id`) REFERENCES `company_packages`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Users

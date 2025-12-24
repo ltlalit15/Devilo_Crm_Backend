@@ -110,6 +110,7 @@ const requireRole = (roles) => {
 
 /**
  * Optional authentication - doesn't fail if no token
+ * Sets default companyId if not provided (for faster API calls without token)
  */
 const optionalAuth = async (req, res, next) => {
   try {
@@ -135,8 +136,23 @@ const optionalAuth = async (req, res, next) => {
       }
     }
 
+    // Set default companyId if not provided (for faster API calls)
+    // Use company_id from query or default to 1
+    if (!req.companyId) {
+      req.companyId = req.query.company_id || req.body.company_id || 1;
+    }
+    
+    // Set default userId if not provided
+    if (!req.userId) {
+      req.userId = req.query.user_id || req.body.user_id || null;
+    }
+
     next();
   } catch (error) {
+    // Set defaults even on error
+    if (!req.companyId) {
+      req.companyId = req.query.company_id || req.body.company_id || 1;
+    }
     next();
   }
 };

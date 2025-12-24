@@ -10,32 +10,36 @@ const pool = require('../config/db');
  */
 const getAdminDashboard = async (req, res) => {
   try {
-    // Get counts
-    const [leadsCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM leads WHERE company_id = ? AND is_deleted = 0`,
-      [req.companyId]
-    );
-
-    const [clientsCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM clients WHERE company_id = ? AND is_deleted = 0`,
-      [req.companyId]
-    );
-
-    const [projectsCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM projects WHERE company_id = ? AND is_deleted = 0`,
-      [req.companyId]
-    );
-
-    const [invoicesCount] = await pool.execute(
-      `SELECT COUNT(*) as total, SUM(total) as total_amount, SUM(paid) as paid_amount, SUM(unpaid) as unpaid_amount
-       FROM invoices WHERE company_id = ? AND is_deleted = 0`,
-      [req.companyId]
-    );
-
-    const [tasksCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM tasks WHERE company_id = ? AND is_deleted = 0`,
-      [req.companyId]
-    );
+    // Parallelize all database queries for better performance
+    const [
+      [leadsCount],
+      [clientsCount],
+      [projectsCount],
+      [invoicesCount],
+      [tasksCount]
+    ] = await Promise.all([
+      pool.execute(
+        `SELECT COUNT(*) as total FROM leads WHERE company_id = ? AND is_deleted = 0`,
+        [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM clients WHERE company_id = ? AND is_deleted = 0`,
+        [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM projects WHERE company_id = ? AND is_deleted = 0`,
+        [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total, SUM(total) as total_amount, SUM(paid) as paid_amount, SUM(unpaid) as unpaid_amount
+         FROM invoices WHERE company_id = ? AND is_deleted = 0`,
+        [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM tasks WHERE company_id = ? AND is_deleted = 0`,
+        [req.companyId]
+      )
+    ]);
 
     res.json({
       success: true,
@@ -68,38 +72,39 @@ const getAdminDashboard = async (req, res) => {
 const getEmployeeDashboard = async (req, res) => {
   try {
     const userId = req.userId;
-
-    // Get my tasks count
-    const [tasksCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM tasks t
-       JOIN task_assignees ta ON t.id = ta.task_id
-       WHERE ta.user_id = ? AND t.company_id = ? AND t.is_deleted = 0`,
-      [userId, req.companyId]
-    );
-
-    // Get my projects count
-    const [projectsCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM projects p
-       JOIN project_members pm ON p.id = pm.project_id
-       WHERE pm.user_id = ? AND p.company_id = ? AND p.is_deleted = 0`,
-      [userId, req.companyId]
-    );
-
-    // Get time logged today
     const today = new Date().toISOString().split('T')[0];
-    const [timeLogs] = await pool.execute(
-      `SELECT SUM(hours) as total_hours FROM time_logs
-       WHERE user_id = ? AND company_id = ? AND date = ? AND is_deleted = 0`,
-      [userId, req.companyId, today]
-    );
 
-    // Get upcoming events
-    const [events] = await pool.execute(
-      `SELECT COUNT(*) as total FROM events e
-       JOIN event_employees ee ON e.id = ee.event_id
-       WHERE ee.user_id = ? AND e.company_id = ? AND e.starts_on_date >= ? AND e.is_deleted = 0`,
-      [userId, req.companyId, today]
-    );
+    // Parallelize all database queries for better performance
+    const [
+      [tasksCount],
+      [projectsCount],
+      [timeLogs],
+      [events]
+    ] = await Promise.all([
+      pool.execute(
+        `SELECT COUNT(*) as total FROM tasks t
+         JOIN task_assignees ta ON t.id = ta.task_id
+         WHERE ta.user_id = ? AND t.company_id = ? AND t.is_deleted = 0`,
+        [userId, req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM projects p
+         JOIN project_members pm ON p.id = pm.project_id
+         WHERE pm.user_id = ? AND p.company_id = ? AND p.is_deleted = 0`,
+        [userId, req.companyId]
+      ),
+      pool.execute(
+        `SELECT SUM(hours) as total_hours FROM time_logs
+         WHERE user_id = ? AND company_id = ? AND date = ? AND is_deleted = 0`,
+        [userId, req.companyId, today]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM events e
+         JOIN event_employees ee ON e.id = ee.event_id
+         WHERE ee.user_id = ? AND e.company_id = ? AND e.starts_on_date >= ? AND e.is_deleted = 0`,
+        [userId, req.companyId, today]
+      )
+    ]);
 
     res.json({
       success: true,
@@ -147,33 +152,34 @@ const getClientDashboard = async (req, res) => {
 
     const clientId = clients[0].id;
 
-    // Get my projects
-    const [projectsCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM projects WHERE client_id = ? AND is_deleted = 0`,
-      [clientId]
-    );
-
-    // Get my tasks
-    const [tasksCount] = await pool.execute(
-      `SELECT COUNT(*) as total FROM tasks WHERE project_id IN (
-         SELECT id FROM projects WHERE client_id = ?
-       ) AND is_deleted = 0`,
-      [clientId]
-    );
-
-    // Get outstanding invoices
-    const [invoices] = await pool.execute(
-      `SELECT SUM(unpaid) as total FROM invoices WHERE client_id = ? AND is_deleted = 0`,
-      [clientId]
-    );
-
-    // Get total payments
-    const [payments] = await pool.execute(
-      `SELECT SUM(amount) as total FROM payments WHERE invoice_id IN (
-         SELECT id FROM invoices WHERE client_id = ?
-       ) AND is_deleted = 0`,
-      [clientId]
-    );
+    // Parallelize all database queries for better performance
+    const [
+      [projectsCount],
+      [tasksCount],
+      [invoices],
+      [payments]
+    ] = await Promise.all([
+      pool.execute(
+        `SELECT COUNT(*) as total FROM projects WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM tasks WHERE project_id IN (
+           SELECT id FROM projects WHERE client_id = ?
+         ) AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT SUM(unpaid) as total FROM invoices WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT SUM(amount) as total FROM payments WHERE invoice_id IN (
+           SELECT id FROM invoices WHERE client_id = ?
+         ) AND is_deleted = 0`,
+        [clientId]
+      )
+    ]);
 
     res.json({
       success: true,

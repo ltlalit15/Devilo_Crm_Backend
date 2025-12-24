@@ -5,16 +5,16 @@
 const express = require('express');
 const router = express.Router();
 const clientController = require('../controllers/clientController');
-const { verifyToken, requireRole } = require('../middleware/auth');
+const { optionalAuth, requireRole } = require('../middleware/auth');
 
-// All routes require authentication
-router.get('/', verifyToken, clientController.getAll);
-router.get('/:id', verifyToken, clientController.getById);
-router.post('/', verifyToken, requireRole(['ADMIN']), clientController.create);
-router.put('/:id', verifyToken, requireRole(['ADMIN']), clientController.update);
-router.delete('/:id', verifyToken, requireRole(['ADMIN']), clientController.delete);
-router.post('/:id/contacts', verifyToken, requireRole(['ADMIN']), clientController.addContact);
-router.get('/:id/contacts', verifyToken, clientController.getContacts);
+// GET routes don't require token - faster API calls
+router.get('/', optionalAuth, clientController.getAll);
+router.get('/:id', optionalAuth, clientController.getById);
+router.post('/', optionalAuth, requireRole(['ADMIN']), clientController.create);
+router.put('/:id', optionalAuth, requireRole(['ADMIN']), clientController.update);
+router.delete('/:id', optionalAuth, requireRole(['ADMIN']), clientController.delete);
+router.post('/:id/contacts', optionalAuth, requireRole(['ADMIN']), clientController.addContact);
+router.get('/:id/contacts', optionalAuth, clientController.getContacts);
 
 module.exports = router;
 

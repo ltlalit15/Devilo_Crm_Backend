@@ -149,7 +149,22 @@ const create = async (req, res) => {
       });
     }
 
-    // Insert event
+    // Validate host_id exists in users table
+    if (hostId) {
+      const [hostCheck] = await connection.execute(
+        `SELECT id FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+        [hostId, req.companyId]
+      );
+      if (hostCheck.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          error: `Invalid host_id: User with ID ${hostId} not found or doesn't belong to this company`
+        });
+      }
+    }
+
+    // Insert event - use NULL if hostId is not provided or invalid
     const [result] = await connection.execute(
       `INSERT INTO events (
         company_id, event_name, label_color, \`where\`, description,
@@ -166,7 +181,7 @@ const create = async (req, res) => {
         startTime,
         endDate,
         endTime,
-        hostId,
+        hostId || null,
         eventStatus,
         link,
         req.userId

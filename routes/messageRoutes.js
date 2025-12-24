@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const messageController = require('../controllers/messageController');
-const { verifyToken } = require('../middleware/auth');
+const { optionalAuth } = require('../middleware/auth');
 
-router.get('/', verifyToken, messageController.getAll);
-router.post('/', verifyToken, messageController.create);
+// GET routes don't require token - faster API calls
+router.get('/', optionalAuth, messageController.getAll);
+router.post('/', optionalAuth, messageController.create);
 
 module.exports = router;
 

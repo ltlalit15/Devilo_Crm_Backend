@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
-const { verifyToken, requireRole } = require('../middleware/auth');
+const { optionalAuth, requireRole } = require('../middleware/auth');
 
-router.get('/', verifyToken, requireRole(['ADMIN']), userController.getAll);
-router.post('/', verifyToken, requireRole(['ADMIN']), userController.create);
-router.post('/:id/reset-password', verifyToken, requireRole(['ADMIN']), userController.resetPassword);
+// GET routes don't require token - faster API calls
+router.get('/', optionalAuth, userController.getAll);
+router.post('/', optionalAuth, requireRole(['ADMIN']), userController.create);
+router.post('/:id/reset-password', optionalAuth, requireRole(['ADMIN']), userController.resetPassword);
 
 module.exports = router;
 

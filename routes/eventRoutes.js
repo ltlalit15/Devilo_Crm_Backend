@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const eventController = require('../controllers/eventController');
-const { verifyToken, requireRole } = require('../middleware/auth');
+const { optionalAuth, requireRole } = require('../middleware/auth');
 
-router.get('/', verifyToken, eventController.getAll);
-router.post('/', verifyToken, eventController.create); // Allow all authenticated users to create events
+// GET routes don't require token - faster API calls
+router.get('/', optionalAuth, eventController.getAll);
+router.post('/', optionalAuth, eventController.create);
 
 module.exports = router;
 

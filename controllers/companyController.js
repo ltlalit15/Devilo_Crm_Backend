@@ -143,7 +143,8 @@ const update = async (req, res) => {
       name,
       logo,
       currency,
-      timezone
+      timezone,
+      package_id
     } = req.body;
 
     // Check if company exists
@@ -178,6 +179,10 @@ const update = async (req, res) => {
     if (timezone !== undefined) {
       updateFields.push('timezone = ?');
       updateValues.push(timezone);
+    }
+    if (package_id !== undefined) {
+      updateFields.push('package_id = ?');
+      updateValues.push(package_id || null);
     }
 
     if (updateFields.length === 0) {
