@@ -14,6 +14,8 @@ const getAdminDashboard = async (req, res) => {
     const [
       [leadsCount],
       [clientsCount],
+      [employeesCount],
+      [companiesCount],
       [projectsCount],
       [invoicesCount],
       [tasksCount]
@@ -25,6 +27,14 @@ const getAdminDashboard = async (req, res) => {
       pool.execute(
         `SELECT COUNT(*) as total FROM clients WHERE company_id = ? AND is_deleted = 0`,
         [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM users WHERE company_id = ? AND role = 'EMPLOYEE' AND is_deleted = 0`,
+        [req.companyId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM companies WHERE is_deleted = 0`,
+        []
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM projects WHERE company_id = ? AND is_deleted = 0`,
@@ -46,6 +56,8 @@ const getAdminDashboard = async (req, res) => {
       data: {
         leads: leadsCount[0].total,
         clients: clientsCount[0].total,
+        employees: employeesCount[0].total,
+        companies: companiesCount[0].total,
         projects: projectsCount[0].total,
         invoices: {
           total: invoicesCount[0].total,

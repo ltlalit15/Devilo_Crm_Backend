@@ -7,7 +7,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
@@ -47,16 +46,15 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 
 // Security
 app.use(helmet());
-
-// CORS
 app.set('trust proxy', 1);
 
-
+// CORS
 app.use(cors({
   origin: [
+    process.env.FRONTEND_URL,       // future env based
     'http://localhost:5173',
     'https://crmnew11.netlify.app'
-  ],
+  ].filter(Boolean),
   credentials: true
 }));
 
@@ -71,14 +69,6 @@ if (process.env.NODE_ENV !== 'production') {
 } else {
   app.use(morgan('combined'));
 }
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
-});
-app.use(`/api/${API_VERSION}/`, limiter);
 
 // Static files (for uploads)
 app.use('/uploads', express.static('uploads'));
