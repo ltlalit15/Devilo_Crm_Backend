@@ -11,13 +11,23 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { status, client_id } = req.query;
+    const { status, client_id, company_id } = req.query;
     
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
 
-    let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params
+    // Don't use req.companyId automatically - show all projects by default
+    const filterCompanyId = company_id;
+    
+    let whereClause = 'WHERE p.is_deleted = 0';
+    const params = [];
+
+    // Add company filter only if explicitly requested via query param
+    if (filterCompanyId) {
+      whereClause += ' AND p.company_id = ?';
+      params.push(filterCompanyId);
+    }
 
     if (status) {
       whereClause += ' AND p.status = ?';
@@ -35,11 +45,18 @@ const getAll = async (req, res) => {
     );
     const total = countResult[0].total;
 
-    // Get paginated projects - LIMIT and OFFSET as template literals (not placeholders)
+    // Get paginated projects with joins - LIMIT and OFFSET as template literals (not placeholders)
     const [projects] = await pool.execute(
-      `SELECT p.*, c.company_name as client_name
+      `SELECT p.*, 
+              c.company_name as client_name,
+              comp.name as company_name,
+              d.name as department_name,
+              pm_user.name as project_manager_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
+       LEFT JOIN companies comp ON p.company_id = comp.id
+       LEFT JOIN departments d ON p.department_id = d.id
+       LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
        ${whereClause}
        ORDER BY p.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -80,11 +97,18 @@ const getById = async (req, res) => {
     const { id } = req.params;
 
     const [projects] = await pool.execute(
-      `SELECT p.*, c.company_name as client_name
+      `SELECT p.*, 
+              c.company_name as client_name,
+              comp.name as company_name,
+              d.name as department_name,
+              pm_user.name as project_manager_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
-       WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
-      [id, req.companyId]
+       LEFT JOIN companies comp ON p.company_id = comp.id
+       LEFT JOIN departments d ON p.department_id = d.id
+       LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       WHERE p.id = ? AND p.is_deleted = 0`,
+      [id]
     );
 
     if (projects.length === 0) {
@@ -125,35 +149,35 @@ const getById = async (req, res) => {
 const create = async (req, res) => {
   try {
     const {
-      short_code, project_name, start_date, deadline, no_deadline,
-      project_category, project_sub_category, department_id, client_id,
-      project_summary, notes, public_gantt_chart, public_task_board,
+      company_id, short_code, project_name, description, start_date, deadline, no_deadline,
+      budget, project_category, project_sub_category, department_id, client_id,
+      project_manager_id, project_summary, notes, public_gantt_chart, public_task_board,
       task_approval, label, project_members = [], status, progress
     } = req.body;
 
     // Validation
-    if (!short_code || !project_name || !start_date || !client_id) {
+    if (!company_id || !short_code || !project_name || !start_date || !client_id || !project_manager_id) {
       return res.status(400).json({
         success: false,
-        error: 'short_code, project_name, start_date, and client_id are required'
+        error: 'company_id, short_code, project_name, start_date, client_id, and project_manager_id are required'
       });
     }
 
     // Insert project
     const [result] = await pool.execute(
       `INSERT INTO projects (
-        company_id, short_code, project_name, start_date, deadline, no_deadline,
-        project_category, project_sub_category, department_id, client_id,
-        project_summary, notes, public_gantt_chart, public_task_board,
+        company_id, short_code, project_name, description, start_date, deadline, no_deadline,
+        budget, project_category, project_sub_category, department_id, client_id,
+        project_manager_id, project_summary, notes, public_gantt_chart, public_task_board,
         task_approval, label, status, progress, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId, short_code, project_name, start_date, deadline,
-        no_deadline || 0, project_category, project_sub_category,
-        department_id, client_id, project_summary, notes,
+        company_id, short_code, project_name, description || null, start_date, deadline,
+        no_deadline || 0, budget || null, project_category || null, project_sub_category || null,
+        department_id || null, client_id, project_manager_id, project_summary || null, notes || null,
         public_gantt_chart || 'enable', public_task_board || 'enable',
-        task_approval || 'disable', label, status || 'in progress',
-        progress || 0, req.userId
+        task_approval || 'disable', label || null, status || 'in progress',
+        progress || 0, req.userId || req.user?.id || 1
       ]
     );
 
@@ -168,9 +192,19 @@ const create = async (req, res) => {
       );
     }
 
-    // Get created project
+    // Get created project with joins
     const [projects] = await pool.execute(
-      `SELECT * FROM projects WHERE id = ?`,
+      `SELECT p.*, 
+              c.company_name as client_name,
+              comp.name as company_name,
+              d.name as department_name,
+              pm_user.name as project_manager_name
+       FROM projects p
+       LEFT JOIN clients c ON p.client_id = c.id
+       LEFT JOIN companies comp ON p.company_id = comp.id
+       LEFT JOIN departments d ON p.department_id = d.id
+       LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       WHERE p.id = ?`,
       [projectId]
     );
 
@@ -199,8 +233,8 @@ const update = async (req, res) => {
 
     // Check if project exists
     const [projects] = await pool.execute(
-      `SELECT id FROM projects WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT id FROM projects WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (projects.length === 0) {
@@ -212,9 +246,9 @@ const update = async (req, res) => {
 
     // Build update query
     const allowedFields = [
-      'project_name', 'start_date', 'deadline', 'no_deadline',
-      'project_category', 'project_sub_category', 'department_id',
-      'project_summary', 'notes', 'public_gantt_chart', 'public_task_board',
+      'company_id', 'project_name', 'description', 'start_date', 'deadline', 'no_deadline',
+      'budget', 'project_category', 'project_sub_category', 'department_id', 'client_id',
+      'project_manager_id', 'project_summary', 'notes', 'public_gantt_chart', 'public_task_board',
       'task_approval', 'label', 'status', 'progress'
     ];
 
@@ -230,10 +264,10 @@ const update = async (req, res) => {
 
     if (updates.length > 0) {
       updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(id, req.companyId);
+      values.push(id);
 
       await pool.execute(
-        `UPDATE projects SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        `UPDATE projects SET ${updates.join(', ')} WHERE id = ?`,
         values
       );
     }
@@ -250,9 +284,19 @@ const update = async (req, res) => {
       }
     }
 
-    // Get updated project
+    // Get updated project with joins
     const [updatedProjects] = await pool.execute(
-      `SELECT * FROM projects WHERE id = ?`,
+      `SELECT p.*, 
+              c.company_name as client_name,
+              comp.name as company_name,
+              d.name as department_name,
+              pm_user.name as project_manager_name
+       FROM projects p
+       LEFT JOIN clients c ON p.client_id = c.id
+       LEFT JOIN companies comp ON p.company_id = comp.id
+       LEFT JOIN departments d ON p.department_id = d.id
+       LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       WHERE p.id = ?`,
       [id]
     );
 
@@ -280,8 +324,8 @@ const deleteProject = async (req, res) => {
 
     const [result] = await pool.execute(
       `UPDATE projects SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+       WHERE id = ?`,
+      [id]
     );
 
     if (result.affectedRows === 0) {

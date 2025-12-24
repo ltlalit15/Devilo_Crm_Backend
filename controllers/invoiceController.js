@@ -78,9 +78,11 @@ const getAll = async (req, res) => {
 
     // Get paginated invoices - LIMIT and OFFSET as template literals (not placeholders)
     const [invoices] = await pool.execute(
-      `SELECT i.*, c.company_name as client_name
+      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN companies comp ON i.company_id = comp.id
+       LEFT JOIN projects p ON i.project_id = p.id
        ${whereClause}
        ORDER BY i.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -119,9 +121,11 @@ const getById = async (req, res) => {
     const { id } = req.params;
 
     const [invoices] = await pool.execute(
-      `SELECT i.*, c.company_name as client_name
+      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN companies comp ON i.company_id = comp.id
+       LEFT JOIN projects p ON i.project_id = p.id
        WHERE i.id = ? AND i.company_id = ? AND i.is_deleted = 0`,
       [id, req.companyId]
     );
@@ -162,7 +166,7 @@ const getById = async (req, res) => {
 const create = async (req, res) => {
   try {
     const {
-      invoice_date, due_date, currency, exchange_rate, client_id, project_id,
+      company_id, invoice_date, due_date, currency, exchange_rate, client_id, project_id,
       calculate_tax, bank_account, payment_details, billing_address,
       shipping_address, generated_by, note, terms, discount, discount_type,
       items = [], is_recurring, billing_frequency, recurring_start_date,
@@ -170,10 +174,10 @@ const create = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!invoice_date || !due_date || !client_id || !items || items.length === 0) {
+    if (!company_id || !invoice_date || !due_date || !client_id || !items || items.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'invoice_date, due_date, client_id, and items are required'
+        error: 'company_id, invoice_date, due_date, client_id, and items are required'
       });
     }
 
@@ -195,7 +199,7 @@ const create = async (req, res) => {
         time_log_from, time_log_to, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        company_id ?? req.companyId ?? null,
         invoice_number,
         invoice_date,
         due_date,
@@ -676,6 +680,54 @@ const createRecurring = async (req, res) => {
   }
 };
 
+/**
+ * Generate PDF data for invoice
+ * GET /api/v1/invoices/:id/pdf
+ */
+const generatePDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [invoices] = await pool.execute(
+      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
+       FROM invoices i
+       LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN companies comp ON i.company_id = comp.id
+       LEFT JOIN projects p ON i.project_id = p.id
+       WHERE i.id = ? AND i.company_id = ? AND i.is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (invoices.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Invoice not found'
+      });
+    }
+
+    const invoice = invoices[0];
+
+    // Get items
+    const [items] = await pool.execute(
+      `SELECT * FROM invoice_items WHERE invoice_id = ?`,
+      [invoice.id]
+    );
+    invoice.items = items;
+
+    // Return invoice data formatted for PDF generation
+    res.json({
+      success: true,
+      data: invoice
+    });
+  } catch (error) {
+    console.error('Generate PDF error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to generate PDF data'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -683,6 +735,7 @@ module.exports = {
   update,
   delete: deleteInvoice,
   createFromTimeLogs,
-  createRecurring
+  createRecurring,
+  generatePDF
 };
 

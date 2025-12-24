@@ -8,8 +8,16 @@ const getAll = async (req, res) => {
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
     
-    let whereClause = 'WHERE company_id = ? AND is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params or req.companyId exists
+    const filterCompanyId = req.query.company_id || req.companyId;
+    
+    let whereClause = 'WHERE is_deleted = 0';
+    const params = [];
+    
+    if (filterCompanyId) {
+      whereClause += ' AND company_id = ?';
+      params.push(filterCompanyId);
+    }
     
     if (module) {
       whereClause += ' AND module = ?';
@@ -29,9 +37,33 @@ const getAll = async (req, res) => {
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
+
+    // Get options, visibility, and enabled_in for each field
+    const fieldsWithRelations = await Promise.all(fields.map(async (field) => {
+      const [options] = await pool.execute(
+        `SELECT option_value FROM custom_field_options WHERE custom_field_id = ? ORDER BY display_order`,
+        [field.id]
+      );
+      const [visibility] = await pool.execute(
+        `SELECT visibility FROM custom_field_visibility WHERE custom_field_id = ?`,
+        [field.id]
+      );
+      const [enabledIn] = await pool.execute(
+        `SELECT enabled_in FROM custom_field_enabled_in WHERE custom_field_id = ?`,
+        [field.id]
+      );
+
+      return {
+        ...field,
+        options: options.map(o => o.option_value),
+        visibility: visibility.map(v => v.visibility),
+        enabledIn: enabledIn.map(e => e.enabled_in)
+      };
+    }));
+
     res.json({ 
       success: true, 
-      data: fields,
+      data: fieldsWithRelations,
       pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
@@ -41,15 +73,115 @@ const getAll = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const { name, label, type, module } = req.body;
+    const { company_id, name, label, type, module, required, options, defaultValue, placeholder, helpText, visibility, enabledIn } = req.body;
+    
+    // Validation
+    if (!name || !label || !type || !module) {
+      return res.status(400).json({
+        success: false,
+        error: 'name, label, type, and module are required'
+      });
+    }
+
+    const companyId = company_id || req.companyId;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "company_id is required"
+      });
+    }
+
+    // Insert custom field
     const [result] = await pool.execute(
-      `INSERT INTO custom_fields (company_id, name, label, type, module)
-       VALUES (?, ?, ?, ?, ?)`,
-      [req.companyId, name, label, type, module]
+      `INSERT INTO custom_fields (
+        company_id, name, label, type, module, required, 
+        default_value, placeholder, help_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        companyId,
+        name,
+        label,
+        type,
+        module,
+        required ? 1 : 0,
+        defaultValue || null,
+        placeholder || null,
+        helpText || null
+      ]
     );
-    res.status(201).json({ success: true, data: { id: result.insertId } });
+
+    const fieldId = result.insertId;
+
+    // Insert options if provided (for dropdown/radio/checkbox/multiselect)
+    if (options && Array.isArray(options)) {
+      for (let i = 0; i < options.length; i++) {
+        await pool.execute(
+          `INSERT INTO custom_field_options (custom_field_id, option_value, display_order)
+           VALUES (?, ?, ?)`,
+          [fieldId, options[i], i]
+        );
+      }
+    }
+
+    // Insert visibility settings
+    const visibilityList = visibility && Array.isArray(visibility) ? visibility : ['all'];
+    for (const vis of visibilityList) {
+      await pool.execute(
+        `INSERT INTO custom_field_visibility (custom_field_id, visibility)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE visibility = visibility`,
+        [fieldId, vis]
+      );
+    }
+
+    // Insert enabled_in settings
+    const enabledInList = enabledIn && Array.isArray(enabledIn) ? enabledIn : ['create', 'edit'];
+    for (const enabled of enabledInList) {
+      await pool.execute(
+        `INSERT INTO custom_field_enabled_in (custom_field_id, enabled_in)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE enabled_in = enabled_in`,
+        [fieldId, enabled]
+      );
+    }
+
+    // Get created field with related data
+    const [fields] = await pool.execute(
+      `SELECT * FROM custom_fields WHERE id = ?`,
+      [fieldId]
+    );
+
+    const [optionsData] = await pool.execute(
+      `SELECT option_value FROM custom_field_options WHERE custom_field_id = ? ORDER BY display_order`,
+      [fieldId]
+    );
+
+    const [visibilityData] = await pool.execute(
+      `SELECT visibility FROM custom_field_visibility WHERE custom_field_id = ?`,
+      [fieldId]
+    );
+
+    const [enabledInData] = await pool.execute(
+      `SELECT enabled_in FROM custom_field_enabled_in WHERE custom_field_id = ?`,
+      [fieldId]
+    );
+
+    const field = fields[0];
+    field.options = optionsData.map(o => o.option_value);
+    field.visibility = visibilityData.map(v => v.visibility);
+    field.enabledIn = enabledInData.map(e => e.enabled_in);
+
+    res.status(201).json({ 
+      success: true, 
+      data: field,
+      message: 'Custom field created successfully'
+    });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create custom field' });
+    console.error('Create custom field error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to create custom field' 
+    });
   }
 };
 

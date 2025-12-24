@@ -6,12 +6,61 @@ const pool = require('../config/db');
 const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateEstimateNumber = async (companyId) => {
-  const [result] = await pool.execute(
-    `SELECT COUNT(*) as count FROM estimates WHERE company_id = ?`,
-    [companyId]
-  );
-  const nextNum = (result[0].count || 0) + 1;
-  return `EST#${String(nextNum).padStart(3, '0')}`;
+  try {
+    // Find the highest existing estimate number globally (estimate_number has UNIQUE constraint)
+    // Check all estimates, not just for this company, since estimate_number is globally unique
+    const [result] = await pool.execute(
+      `SELECT estimate_number FROM estimates 
+       WHERE is_deleted = 0 AND estimate_number LIKE 'EST#%'
+       ORDER BY LENGTH(estimate_number) DESC, estimate_number DESC 
+       LIMIT 1`
+    );
+    
+    let nextNum = 1;
+    if (result.length > 0 && result[0].estimate_number) {
+      // Extract number from EST#001 format
+      const estimateNum = result[0].estimate_number;
+      const match = estimateNum.match(/EST#(\d+)/);
+      if (match && match[1]) {
+        const existingNum = parseInt(match[1], 10);
+        if (!isNaN(existingNum)) {
+          nextNum = existingNum + 1;
+        }
+      }
+    }
+    
+    // Ensure uniqueness by checking if the number already exists globally
+    let estimateNumber = `EST#${String(nextNum).padStart(3, '0')}`;
+    let attempts = 0;
+    const maxAttempts = 100;
+    
+    while (attempts < maxAttempts) {
+      // Check globally since estimate_number has UNIQUE constraint
+      const [existing] = await pool.execute(
+        `SELECT id FROM estimates WHERE estimate_number = ? AND is_deleted = 0`,
+        [estimateNumber]
+      );
+      
+      if (existing.length === 0) {
+        // Number is unique, return it
+        return estimateNumber;
+      }
+      
+      // Number exists, try next one
+      nextNum++;
+      estimateNumber = `EST#${String(nextNum).padStart(3, '0')}`;
+      attempts++;
+    }
+    
+    // Fallback: use timestamp-based number if we can't find a unique sequential number
+    const timestamp = Date.now().toString().slice(-6);
+    return `EST#${timestamp}`;
+  } catch (error) {
+    console.error('Error generating estimate number:', error);
+    // Fallback to timestamp-based number on error
+    const timestamp = Date.now().toString().slice(-6);
+    return `EST#${timestamp}`;
+  }
 };
 
 const getAll = async (req, res) => {
@@ -19,8 +68,22 @@ const getAll = async (req, res) => {
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
     
-    const whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params or req.companyId exists
+    const filterCompanyId = req.query.company_id || req.companyId;
+    
+    let whereClause = 'WHERE e.is_deleted = 0';
+    const params = [];
+    
+    if (filterCompanyId) {
+      whereClause += ' AND e.company_id = ?';
+      params.push(filterCompanyId);
+    }
+    
+    // Optional status filter
+    if (req.query.status && req.query.status !== 'All') {
+      whereClause += ' AND UPPER(e.status) = UPPER(?)';
+      params.push(req.query.status);
+    }
     
     // Get total count for pagination
     const [countResult] = await pool.execute(
@@ -31,23 +94,67 @@ const getAll = async (req, res) => {
 
     // Get paginated estimates - LIMIT and OFFSET as template literals (not placeholders)
     const [estimates] = await pool.execute(
-      `SELECT e.*, c.company_name as client_name
+      `SELECT 
+        e.id,
+        e.company_id,
+        e.estimate_number,
+        e.valid_till,
+        e.currency,
+        e.client_id,
+        e.project_id,
+        e.calculate_tax,
+        e.description,
+        e.note,
+        e.terms,
+        e.discount,
+        e.discount_type,
+        e.sub_total,
+        e.discount_amount,
+        e.tax_amount,
+        e.total,
+        e.estimate_request_number,
+        e.status,
+        e.created_by,
+        e.created_at,
+        e.updated_at,
+        e.is_deleted,
+        c.company_name as client_name,
+        p.project_name,
+        comp.name as company_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
        ${whereClause}
        ORDER BY e.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
+    // Fetch items for each estimate and format the response
     for (let estimate of estimates) {
       const [items] = await pool.execute(
-        `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+        `SELECT 
+          id,
+          estimate_id,
+          item_name,
+          description,
+          quantity,
+          unit,
+          unit_price,
+          tax,
+          tax_rate,
+          file_path,
+          amount,
+          created_at,
+          updated_at
+         FROM estimate_items WHERE estimate_id = ?`,
         [estimate.id]
       );
-      estimate.items = items;
+      estimate.items = items || [];
     }
 
+    // Return response in the exact format expected
     res.json({ 
       success: true, 
       data: estimates,
@@ -55,7 +162,10 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get estimates error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch estimates' });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch estimates' 
+    });
   }
 };
 
@@ -63,8 +173,13 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
     const [estimates] = await pool.execute(
-      `SELECT * FROM estimates WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ? AND e.is_deleted = 0`,
+      [id]
     );
     if (estimates.length === 0) {
       return res.status(404).json({ success: false, error: 'Estimate not found' });
@@ -102,7 +217,14 @@ const create = async (req, res) => {
       });
     }
 
-    const estimate_number = await generateEstimateNumber(req.companyId);
+    const companyId = req.body.company_id || req.companyId;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "company_id is required"
+      });
+    }
+    const estimate_number = await generateEstimateNumber(companyId);
     
     // Calculate totals from items
     const totals = calculateTotals(items, discount || 0, discount_type || '%');
@@ -115,7 +237,7 @@ const create = async (req, res) => {
         sub_total, discount_amount, tax_amount, total, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         estimate_number,
         valid_till,
         currency || 'USD',
@@ -209,8 +331,8 @@ const update = async (req, res) => {
 
     // Check if estimate exists
     const [estimates] = await pool.execute(
-      `SELECT id FROM estimates WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT id FROM estimates WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (estimates.length === 0) {
@@ -292,10 +414,10 @@ const update = async (req, res) => {
 
     if (updates.length > 0) {
       updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(id, req.companyId);
+      values.push(id);
 
       await pool.execute(
-        `UPDATE estimates SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        `UPDATE estimates SET ${updates.join(', ')} WHERE id = ?`,
         values
       );
     }
@@ -327,12 +449,21 @@ const update = async (req, res) => {
 const deleteEstimate = async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.execute(
-      `UPDATE estimates SET is_deleted = 1 WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+    const [result] = await pool.execute(
+      `UPDATE estimates SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
     );
-    res.json({ success: true, message: 'Estimate deleted' });
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Estimate not found'
+      });
+    }
+    
+    res.json({ success: true, message: 'Estimate deleted successfully' });
   } catch (error) {
+    console.error('Delete estimate error:', error);
     res.status(500).json({ success: false, error: 'Failed to delete estimate' });
   }
 };

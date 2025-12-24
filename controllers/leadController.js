@@ -54,16 +54,8 @@ const getAll = async (req, res) => {
       params
     );
 
-    // Get managers and labels for each lead
+    // Get labels for each lead
     for (let lead of leads) {
-      const [managers] = await pool.execute(
-        `SELECT u.id, u.name FROM lead_managers lm
-         JOIN users u ON lm.user_id = u.id
-         WHERE lm.lead_id = ?`,
-        [lead.id]
-      );
-      lead.managers = managers;
-
       const [labels] = await pool.execute(
         `SELECT label FROM lead_labels WHERE lead_id = ?`,
         [lead.id]
@@ -110,15 +102,6 @@ const getById = async (req, res) => {
 
     const lead = leads[0];
 
-    // Get managers
-    const [managers] = await pool.execute(
-      `SELECT u.id, u.name FROM lead_managers lm
-       JOIN users u ON lm.user_id = u.id
-       WHERE lm.lead_id = ?`,
-      [lead.id]
-    );
-    lead.managers = managers;
-
     // Get labels
     const [labels] = await pool.execute(
       `SELECT label FROM lead_labels WHERE lead_id = ?`,
@@ -147,7 +130,7 @@ const create = async (req, res) => {
   try {
     const {
       lead_type, company_name, person_name, email, phone,
-      owner_id, managers = [], status, source, address,
+      owner_id, status, source, address,
       city, state, zip, country, value, due_followup,
       notes, probability, call_this_week, labels = []
     } = req.body;
@@ -192,15 +175,6 @@ const create = async (req, res) => {
     );
 
     const leadId = result.insertId;
-
-    // Insert managers
-    if (managers.length > 0) {
-      const managerValues = managers.map(userId => [leadId, userId]);
-      await pool.query(
-        `INSERT INTO lead_managers (lead_id, user_id) VALUES ?`,
-        [managerValues]
-      );
-    }
 
     // Insert labels
     if (labels.length > 0) {
@@ -291,18 +265,6 @@ const update = async (req, res) => {
       `UPDATE leads SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
       values
     );
-
-    // Update managers if provided
-    if (updateFields.managers) {
-      await pool.execute(`DELETE FROM lead_managers WHERE lead_id = ?`, [id]);
-      if (updateFields.managers.length > 0) {
-        const managerValues = updateFields.managers.map(userId => [id, userId]);
-        await pool.query(
-          `INSERT INTO lead_managers (lead_id, user_id) VALUES ?`,
-          [managerValues]
-        );
-      }
-    }
 
     // Update labels if provided
     if (updateFields.labels) {

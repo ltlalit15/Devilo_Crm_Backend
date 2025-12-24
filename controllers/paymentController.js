@@ -39,10 +39,11 @@ const getAll = async (req, res) => {
 
     // Get paginated payments - LIMIT and OFFSET as template literals (not placeholders)
     const [payments] = await pool.execute(
-      `SELECT p.*, i.invoice_number, c.company_name as client_name
+      `SELECT p.*, i.invoice_number, c.company_name as client_name, comp.name as company_name
        FROM payments p
        LEFT JOIN invoices i ON p.invoice_id = i.id
        LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN companies comp ON p.company_id = comp.id
        ${whereClause}
        ORDER BY p.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -107,16 +108,16 @@ const getById = async (req, res) => {
 const create = async (req, res) => {
   try {
     const {
-      project_id, invoice_id, paid_on, amount, currency, exchange_rate,
+      company_id, project_id, invoice_id, paid_on, amount, currency, exchange_rate,
       transaction_id, payment_gateway, offline_payment_method, bank_account,
       receipt_path, remark, order_number
     } = req.body;
 
     // Validation
-    if (!invoice_id || !paid_on || !amount) {
+    if (!company_id || !invoice_id || !paid_on || !amount) {
       return res.status(400).json({
         success: false,
-        error: 'invoice_id, paid_on, and amount are required'
+        error: 'company_id, invoice_id, paid_on, and amount are required'
       });
     }
 
@@ -128,7 +129,7 @@ const create = async (req, res) => {
         bank_account, receipt_path, remark, order_number, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        company_id ?? req.companyId ?? null,
         project_id ?? null,
         invoice_id,
         paid_on,

@@ -15,6 +15,8 @@ router.put('/:id', optionalAuth, requireRole(['ADMIN']), clientController.update
 router.delete('/:id', optionalAuth, requireRole(['ADMIN']), clientController.delete);
 router.post('/:id/contacts', optionalAuth, requireRole(['ADMIN']), clientController.addContact);
 router.get('/:id/contacts', optionalAuth, clientController.getContacts);
+router.put('/:id/contacts/:contactId', optionalAuth, requireRole(['ADMIN']), clientController.updateContact);
+router.delete('/:id/contacts/:contactId', optionalAuth, requireRole(['ADMIN']), clientController.deleteContact);
 
 module.exports = router;
 

@@ -39,29 +39,75 @@ const getAll = async (req, res) => {
     );
     const total = countResult[0].total;
 
-    // Get paginated packages - LIMIT and OFFSET as template literals (not placeholders)
+    // Get paginated packages with assigned companies count and names
     const [packages] = await pool.execute(
-      `SELECT cp.*, 
-              0 as companies_count
+      `SELECT cp.*,
+              COUNT(DISTINCT c.id) as companies_count,
+              GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ', ') as assigned_companies,
+              CAST(cp.features AS CHAR) as features_json
        FROM company_packages cp
+       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
        ${whereClause}
+       GROUP BY cp.id
        ORDER BY cp.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
-    // Parse JSON features safely
+    // Parse JSON features safely and format assigned companies
     const packagesWithFeatures = packages.map(pkg => {
       try {
+        const assignedCompanies = pkg.assigned_companies 
+          ? pkg.assigned_companies.split(', ').filter(name => name.trim())
+          : [];
+        
+        // Handle features parsing - MySQL JSON columns return as objects or strings
+        let parsedFeatures = [];
+        if (pkg.features_json) {
+          try {
+            parsedFeatures = JSON.parse(pkg.features_json);
+            if (!Array.isArray(parsedFeatures)) {
+              parsedFeatures = [];
+            }
+          } catch (e) {
+            console.error('Error parsing features_json for package:', pkg.id, e);
+            parsedFeatures = [];
+          }
+        } else if (pkg.features) {
+          if (typeof pkg.features === 'string') {
+            try {
+              parsedFeatures = JSON.parse(pkg.features);
+              if (!Array.isArray(parsedFeatures)) {
+                parsedFeatures = [];
+              }
+            } catch (e) {
+              console.error('Error parsing features string for package:', pkg.id, e);
+              parsedFeatures = [];
+            }
+          } else if (Array.isArray(pkg.features)) {
+            parsedFeatures = pkg.features;
+          } else if (typeof pkg.features === 'object') {
+            // MySQL JSON might return as object, convert to array if needed
+            parsedFeatures = Object.values(pkg.features);
+          }
+        }
+        
+        // Remove temporary features_json field
+        const { features_json, ...packageData } = pkg;
+        
         return {
-          ...pkg,
-          features: pkg.features ? (typeof pkg.features === 'string' ? JSON.parse(pkg.features) : pkg.features) : []
+          ...packageData,
+          features: Array.isArray(parsedFeatures) ? parsedFeatures : [],
+          companies_count: parseInt(pkg.companies_count) || 0,
+          assigned_companies: assignedCompanies
         };
       } catch (parseError) {
         console.error('Error parsing features for package:', pkg.id, parseError);
         return {
           ...pkg,
-          features: []
+          features: [],
+          companies_count: parseInt(pkg.companies_count) || 0,
+          assigned_companies: pkg.assigned_companies ? pkg.assigned_companies.split(', ').filter(name => name.trim()) : []
         };
       }
     });
@@ -95,10 +141,14 @@ const getById = async (req, res) => {
     const { id } = req.params;
 
     const [packages] = await pool.execute(
-      `SELECT cp.*, 
-              0 as companies_count
+      `SELECT cp.*,
+              COUNT(DISTINCT c.id) as companies_count,
+              GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ', ') as assigned_companies,
+              CAST(cp.features AS CHAR) as features_json
        FROM company_packages cp
-       WHERE cp.id = ? AND cp.company_id = ? AND cp.is_deleted = 0`,
+       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
+       WHERE cp.id = ? AND cp.company_id = ? AND cp.is_deleted = 0
+       GROUP BY cp.id`,
       [id, req.companyId]
     );
 
@@ -110,7 +160,46 @@ const getById = async (req, res) => {
     }
 
     const pkg = packages[0];
-    pkg.features = pkg.features ? JSON.parse(pkg.features) : [];
+    console.log('Raw package from DB (getById):', JSON.stringify(pkg, null, 2));
+    console.log('Features JSON from DB:', pkg.features_json);
+    
+    // Parse features - handle MySQL JSON column format
+    let parsedFeatures = [];
+    if (pkg.features_json) {
+      try {
+        parsedFeatures = JSON.parse(pkg.features_json);
+        if (!Array.isArray(parsedFeatures)) {
+          parsedFeatures = [];
+        }
+      } catch (e) {
+        console.error('Error parsing features_json:', e);
+        parsedFeatures = [];
+      }
+    } else if (pkg.features) {
+      if (typeof pkg.features === 'string') {
+        try {
+          parsedFeatures = JSON.parse(pkg.features);
+          if (!Array.isArray(parsedFeatures)) {
+            parsedFeatures = [];
+          }
+        } catch (e) {
+          console.error('Error parsing features string:', e);
+          parsedFeatures = [];
+        }
+      } else if (Array.isArray(pkg.features)) {
+        parsedFeatures = pkg.features;
+      } else if (typeof pkg.features === 'object') {
+        parsedFeatures = Object.values(pkg.features);
+      }
+    }
+    
+    console.log('Final parsed features (getById):', parsedFeatures);
+    pkg.features = parsedFeatures;
+    delete pkg.features_json; // Remove temporary field
+    pkg.companies_count = parseInt(pkg.companies_count) || 0;
+    pkg.assigned_companies = pkg.assigned_companies 
+      ? pkg.assigned_companies.split(', ').filter(name => name.trim())
+      : [];
 
     res.json({
       success: true,
@@ -131,6 +220,12 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
+    console.log('=== CREATE PACKAGE REQUEST ===');
+    console.log('Full request body:', JSON.stringify(req.body, null, 2));
+    console.log('Features received:', req.body.features);
+    console.log('Features type:', typeof req.body.features);
+    console.log('Is array?', Array.isArray(req.body.features));
+    
     const {
       package_name,
       price,
@@ -146,6 +241,29 @@ const create = async (req, res) => {
       });
     }
 
+    // Ensure features is always an array - handle all possible formats
+    let featuresArray = [];
+    if (Array.isArray(features)) {
+      featuresArray = features;
+    } else if (typeof features === 'string') {
+      try {
+        featuresArray = JSON.parse(features);
+        if (!Array.isArray(featuresArray)) {
+          featuresArray = [];
+        }
+      } catch (e) {
+        console.error('Error parsing features string:', e);
+        featuresArray = [];
+      }
+    } else if (features && typeof features === 'object') {
+      featuresArray = Object.values(features);
+    }
+    
+    const featuresJson = JSON.stringify(featuresArray);
+
+    console.log('Processed features array:', featuresArray);
+    console.log('Features JSON to store:', featuresJson);
+
     const [result] = await pool.execute(
       `INSERT INTO company_packages 
        (company_id, package_name, price, billing_cycle, features, status)
@@ -155,19 +273,66 @@ const create = async (req, res) => {
         package_name,
         parseFloat(price),
         billing_cycle,
-        JSON.stringify(features),
+        featuresJson,
         status
       ]
     );
 
     const [newPackage] = await pool.execute(
-      `SELECT * FROM company_packages WHERE id = ?`,
+      `SELECT cp.*,
+              COUNT(DISTINCT c.id) as companies_count,
+              GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ', ') as assigned_companies,
+              CAST(cp.features AS CHAR) as features_json
+       FROM company_packages cp
+       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
+       WHERE cp.id = ?
+       GROUP BY cp.id`,
       [result.insertId]
     );
 
     const pkg = newPackage[0];
-    pkg.features = pkg.features ? JSON.parse(pkg.features) : [];
-    pkg.companies_count = 0;
+    console.log('Raw package from DB:', JSON.stringify(pkg, null, 2));
+    console.log('Features from DB (raw):', pkg.features);
+    console.log('Features JSON from DB:', pkg.features_json);
+    console.log('Features type:', typeof pkg.features);
+    
+    // Parse features - handle MySQL JSON column format
+    let parsedFeatures = [];
+    if (pkg.features_json) {
+      try {
+        parsedFeatures = JSON.parse(pkg.features_json);
+        if (!Array.isArray(parsedFeatures)) {
+          parsedFeatures = [];
+        }
+      } catch (e) {
+        console.error('Error parsing features_json:', e);
+        parsedFeatures = [];
+      }
+    } else if (pkg.features) {
+      if (typeof pkg.features === 'string') {
+        try {
+          parsedFeatures = JSON.parse(pkg.features);
+          if (!Array.isArray(parsedFeatures)) {
+            parsedFeatures = [];
+          }
+        } catch (e) {
+          console.error('Error parsing features string:', e);
+          parsedFeatures = [];
+        }
+      } else if (Array.isArray(pkg.features)) {
+        parsedFeatures = pkg.features;
+      } else if (typeof pkg.features === 'object') {
+        parsedFeatures = Object.values(pkg.features);
+      }
+    }
+    
+    console.log('Final parsed features:', parsedFeatures);
+    pkg.features = parsedFeatures;
+    delete pkg.features_json; // Remove temporary field
+    pkg.companies_count = parseInt(pkg.companies_count) || 0;
+    pkg.assigned_companies = pkg.assigned_companies 
+      ? pkg.assigned_companies.split(', ').filter(name => name.trim())
+      : [];
 
     res.status(201).json({
       success: true,
@@ -228,8 +393,13 @@ const update = async (req, res) => {
       updateValues.push(billing_cycle);
     }
     if (features !== undefined) {
+      // Ensure features is always an array
+      const featuresArray = Array.isArray(features) ? features : [];
+      const featuresJson = featuresArray.length > 0 ? JSON.stringify(featuresArray) : JSON.stringify([]);
       updateFields.push('features = ?');
-      updateValues.push(JSON.stringify(features));
+      updateValues.push(featuresJson);
+      console.log('Updating package with features:', featuresArray);
+      console.log('Features JSON:', featuresJson);
     }
     if (status !== undefined) {
       updateFields.push('status = ?');
@@ -251,15 +421,58 @@ const update = async (req, res) => {
     );
 
     const [updated] = await pool.execute(
-      `SELECT cp.*, 
-              0 as companies_count
+      `SELECT cp.*,
+              COUNT(DISTINCT c.id) as companies_count,
+              GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ', ') as assigned_companies,
+              CAST(cp.features AS CHAR) as features_json
        FROM company_packages cp
-       WHERE cp.id = ? AND cp.company_id = ?`,
+       LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
+       WHERE cp.id = ? AND cp.company_id = ?
+       GROUP BY cp.id`,
       [id, req.companyId]
     );
 
     const pkg = updated[0];
-    pkg.features = pkg.features ? JSON.parse(pkg.features) : [];
+    console.log('Raw package from DB (update):', JSON.stringify(pkg, null, 2));
+    console.log('Features JSON from DB:', pkg.features_json);
+    
+    // Parse features - handle MySQL JSON column format
+    let parsedFeatures = [];
+    if (pkg.features_json) {
+      try {
+        parsedFeatures = JSON.parse(pkg.features_json);
+        if (!Array.isArray(parsedFeatures)) {
+          parsedFeatures = [];
+        }
+      } catch (e) {
+        console.error('Error parsing features_json:', e);
+        parsedFeatures = [];
+      }
+    } else if (pkg.features) {
+      if (typeof pkg.features === 'string') {
+        try {
+          parsedFeatures = JSON.parse(pkg.features);
+          if (!Array.isArray(parsedFeatures)) {
+            parsedFeatures = [];
+          }
+        } catch (e) {
+          console.error('Error parsing features string:', e);
+          parsedFeatures = [];
+        }
+      } else if (Array.isArray(pkg.features)) {
+        parsedFeatures = pkg.features;
+      } else if (typeof pkg.features === 'object') {
+        parsedFeatures = Object.values(pkg.features);
+      }
+    }
+    
+    console.log('Final parsed features (update):', parsedFeatures);
+    pkg.features = parsedFeatures;
+    delete pkg.features_json; // Remove temporary field
+    pkg.companies_count = parseInt(pkg.companies_count) || 0;
+    pkg.assigned_companies = pkg.assigned_companies 
+      ? pkg.assigned_companies.split(', ').filter(name => name.trim())
+      : [];
 
     res.json({
       success: true,

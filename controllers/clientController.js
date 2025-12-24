@@ -485,6 +485,157 @@ const getContacts = async (req, res) => {
   }
 };
 
+/**
+ * Update client contact
+ * PUT /api/v1/clients/:id/contacts/:contactId
+ */
+const updateContact = async (req, res) => {
+  try {
+    const { id, contactId } = req.params;
+    const { name, job_title, email, phone, is_primary } = req.body;
+
+    // Check if client exists
+    const [clients] = await pool.execute(
+      `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (clients.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Client not found'
+      });
+    }
+
+    // Check if contact exists
+    const [contacts] = await pool.execute(
+      `SELECT id FROM client_contacts WHERE id = ? AND client_id = ? AND is_deleted = 0`,
+      [contactId, id]
+    );
+
+    if (contacts.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Contact not found'
+      });
+    }
+
+    // If setting as primary, unset other primary contacts
+    if (is_primary) {
+      await pool.execute(
+        `UPDATE client_contacts SET is_primary = 0 WHERE client_id = ? AND id != ?`,
+        [id, contactId]
+      );
+    }
+
+    // Update contact
+    const updates = [];
+    const values = [];
+
+    if (name !== undefined) {
+      updates.push('name = ?');
+      values.push(name);
+    }
+    if (job_title !== undefined) {
+      updates.push('job_title = ?');
+      values.push(job_title);
+    }
+    if (email !== undefined) {
+      updates.push('email = ?');
+      values.push(email);
+    }
+    if (phone !== undefined) {
+      updates.push('phone = ?');
+      values.push(phone);
+    }
+    if (is_primary !== undefined) {
+      updates.push('is_primary = ?');
+      values.push(is_primary ? 1 : 0);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No fields to update'
+      });
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    values.push(contactId, id);
+
+    await pool.execute(
+      `UPDATE client_contacts SET ${updates.join(', ')} WHERE id = ? AND client_id = ?`,
+      values
+    );
+
+    // Get updated contact
+    const [updatedContacts] = await pool.execute(
+      `SELECT * FROM client_contacts WHERE id = ? AND client_id = ?`,
+      [contactId, id]
+    );
+
+    res.json({
+      success: true,
+      data: updatedContacts[0],
+      message: 'Contact updated successfully'
+    });
+  } catch (error) {
+    console.error('Update contact error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update contact'
+    });
+  }
+};
+
+/**
+ * Delete client contact (soft delete)
+ * DELETE /api/v1/clients/:id/contacts/:contactId
+ */
+const deleteContact = async (req, res) => {
+  try {
+    const { id, contactId } = req.params;
+
+    // Check if client exists
+    const [clients] = await pool.execute(
+      `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (clients.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Client not found'
+      });
+    }
+
+    // Soft delete contact
+    const [result] = await pool.execute(
+      `UPDATE client_contacts SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND client_id = ?`,
+      [contactId, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Contact not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Contact deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete contact error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete contact'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -492,6 +643,8 @@ module.exports = {
   update,
   delete: deleteClient,
   addContact,
-  getContacts
+  getContacts,
+  updateContact,
+  deleteContact
 };
 

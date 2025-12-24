@@ -109,6 +109,10 @@ const create = async (req, res) => {
   try {
     const {
       name,
+      industry,
+      website,
+      address,
+      notes,
       logo,
       currency = 'USD',
       timezone = 'UTC'
@@ -122,9 +126,9 @@ const create = async (req, res) => {
     }
 
     const [result] = await pool.execute(
-      `INSERT INTO companies (name, logo, currency, timezone)
-       VALUES (?, ?, ?, ?)`,
-      [name, logo || null, currency, timezone]
+      `INSERT INTO companies (name, industry, website, address, notes, logo, currency, timezone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name, industry || null, website || null, address || null, notes || null, logo || null, currency, timezone]
     );
 
     const [newCompany] = await pool.execute(
@@ -155,6 +159,10 @@ const update = async (req, res) => {
     const { id } = req.params;
     const {
       name,
+      industry,
+      website,
+      address,
+      notes,
       logo,
       currency,
       timezone,
@@ -181,6 +189,22 @@ const update = async (req, res) => {
     if (name !== undefined) {
       updateFields.push('name = ?');
       updateValues.push(name);
+    }
+    if (industry !== undefined) {
+      updateFields.push('industry = ?');
+      updateValues.push(industry || null);
+    }
+    if (website !== undefined) {
+      updateFields.push('website = ?');
+      updateValues.push(website || null);
+    }
+    if (address !== undefined) {
+      updateFields.push('address = ?');
+      updateValues.push(address || null);
+    }
+    if (notes !== undefined) {
+      updateFields.push('notes = ?');
+      updateValues.push(notes || null);
     }
     if (logo !== undefined) {
       updateFields.push('logo = ?');

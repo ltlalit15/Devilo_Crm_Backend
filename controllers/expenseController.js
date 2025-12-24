@@ -48,8 +48,16 @@ const getAll = async (req, res) => {
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
 
-    let whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params or req.companyId exists
+    const filterCompanyId = req.query.company_id || req.companyId;
+    
+    let whereClause = 'WHERE e.is_deleted = 0';
+    const params = [];
+
+    if (filterCompanyId) {
+      whereClause += ' AND e.company_id = ?';
+      params.push(filterCompanyId);
+    }
 
     if (status) {
       whereClause += ' AND e.status = ?';
@@ -95,7 +103,7 @@ const getAll = async (req, res) => {
 const create = async (req, res) => {
   try {
     const {
-      lead_id, deal_id, valid_till, currency, calculate_tax, description,
+      company_id, lead_id, deal_id, valid_till, currency, calculate_tax, description,
       note, terms, discount, discount_type, require_approval, items = []
     } = req.body;
 
@@ -107,8 +115,16 @@ const create = async (req, res) => {
       });
     }
 
+    const companyId = req.body.company_id || req.companyId;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "company_id is required"
+      });
+    }
+
     // Generate expense number
-    const expense_number = await generateExpenseNumber(req.companyId);
+    const expense_number = await generateExpenseNumber(companyId);
 
     // Calculate totals
     const totals = calculateTotals(items, discount || 0, discount_type || '%');
@@ -122,7 +138,7 @@ const create = async (req, res) => {
         status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         expense_number,
         lead_id ?? null,
         deal_id ?? null,

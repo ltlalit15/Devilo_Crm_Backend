@@ -46,13 +46,23 @@ const generateTaskCode = async (projectId, companyId) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { status, project_id, assigned_to } = req.query;
+    const { status, project_id, assigned_to, company_id } = req.query;
     
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
 
-    let whereClause = 'WHERE t.company_id = ? AND t.is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params
+    // Don't use req.companyId automatically - show all tasks by default
+    const filterCompanyId = company_id || req.companyId;
+    
+    let whereClause = 'WHERE t.is_deleted = 0';
+    const params = [];
+
+    // Add company filter only if explicitly requested via query param or req.companyId exists
+    if (filterCompanyId) {
+      whereClause += ' AND t.company_id = ?';
+      params.push(filterCompanyId);
+    }
 
     if (status) {
       whereClause += ' AND t.status = ?';
@@ -130,8 +140,8 @@ const getById = async (req, res) => {
       `SELECT t.*, p.project_name, p.short_code as project_code
        FROM tasks t
        LEFT JOIN projects p ON t.project_id = p.id
-       WHERE t.id = ? AND t.company_id = ? AND t.is_deleted = 0`,
-      [id, req.companyId]
+       WHERE t.id = ? AND t.is_deleted = 0`,
+      [id]
     );
 
     if (tasks.length === 0) {
@@ -219,7 +229,14 @@ const create = async (req, res) => {
     // ===============================
     // GENERATE TASK CODE
     // ===============================
-    const code = await generateTaskCode(safeProjectId, req.companyId);
+    const companyId = req.body.company_id || req.companyId;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "company_id is required"
+      });
+    }
+    const code = await generateTaskCode(safeProjectId, companyId);
 
     // ===============================
     // INSERT TASK
@@ -243,7 +260,7 @@ const create = async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
-        req.companyId,
+        companyId,
         code,
         title,
         safeSubDescription,
@@ -319,8 +336,8 @@ const update = async (req, res) => {
 
     // Check if task exists
     const [tasks] = await pool.execute(
-      `SELECT id FROM tasks WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT id FROM tasks WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (tasks.length === 0) {
@@ -332,7 +349,7 @@ const update = async (req, res) => {
 
     // Build update query
     const allowedFields = [
-      'title', 'sub_description', 'task_category', 'project_id',
+      'title', 'sub_description', 'task_category', 'project_id', 'company_id',
       'start_date', 'due_date', 'status', 'priority', 'estimated_time',
       'description', 'completed_on'
     ];
@@ -349,10 +366,10 @@ const update = async (req, res) => {
 
     if (updates.length > 0) {
       updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(id, req.companyId);
+      values.push(id);
 
       await pool.execute(
-        `UPDATE tasks SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`,
         values
       );
     }
@@ -411,8 +428,8 @@ const deleteTask = async (req, res) => {
 
     const [result] = await pool.execute(
       `UPDATE tasks SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+       WHERE id = ?`,
+      [id]
     );
 
     if (result.affectedRows === 0) {

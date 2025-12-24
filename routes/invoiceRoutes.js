@@ -15,6 +15,7 @@ router.put('/:id', optionalAuth, requireRole(['ADMIN']), invoiceController.updat
 router.delete('/:id', optionalAuth, requireRole(['ADMIN']), invoiceController.delete);
 router.post('/create-from-time-logs', optionalAuth, requireRole(['ADMIN']), invoiceController.createFromTimeLogs);
 router.post('/create-recurring', optionalAuth, requireRole(['ADMIN']), invoiceController.createRecurring);
+router.get('/:id/pdf', optionalAuth, invoiceController.generatePDF);
 
 module.exports = router;
 

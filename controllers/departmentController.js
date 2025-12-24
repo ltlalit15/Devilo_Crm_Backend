@@ -3,16 +3,28 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    // Check if companyId exists
-    if (!req.companyId) {
-      return res.status(400).json({ success: false, error: 'Company ID is required' });
-    }
-    
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
     
-    const whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
-    const params = [req.companyId];
+    // Only filter by company_id if explicitly provided in query params
+    // Don't use req.companyId automatically - show all departments by default
+    const filterCompanyId = req.query.company_id;
+    
+    let whereClause = 'WHERE d.is_deleted = 0';
+    const params = [];
+    
+    // Add company filter only if explicitly requested via query param
+    if (filterCompanyId) {
+      whereClause += ' AND d.company_id = ?';
+      params.push(filterCompanyId);
+    }
+    
+    console.log('=== GET DEPARTMENTS REQUEST ===');
+    console.log('Query params:', req.query);
+    console.log('Filter company_id:', filterCompanyId);
+    console.log('req.companyId:', req.companyId);
+    console.log('Where clause:', whereClause);
+    console.log('Params:', params);
     
     // Get total count for pagination
     const [countResult] = await pool.execute(
@@ -23,15 +35,18 @@ const getAll = async (req, res) => {
 
     // Get paginated departments - LIMIT and OFFSET as template literals (not placeholders)
     const [departments] = await pool.execute(
-      `SELECT d.*, u.name as head_name, u.email as head_email,
+      `SELECT d.*, c.name as company_name,
        COALESCE((SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id), 0) as total_employees
        FROM departments d
-       LEFT JOIN users u ON d.head_id = u.id
+       LEFT JOIN companies c ON d.company_id = c.id
        ${whereClause}
        ORDER BY d.name
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
+    
+    console.log('Total departments found:', departments.length);
+    console.log('Departments:', JSON.stringify(departments, null, 2));
     
     res.json({ 
       success: true, 
@@ -57,14 +72,62 @@ const getAll = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const { name, head_id } = req.body;
+    const { name, company_id } = req.body;
+    
+    console.log('=== CREATE DEPARTMENT REQUEST ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('req.companyId:', req.companyId);
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: 'Department name is required' });
+    }
+    
+    // Use company_id from request body, fallback to req.companyId if not provided
+    const finalCompanyId = company_id || req.companyId;
+    
+    if (!finalCompanyId) {
+      return res.status(400).json({ success: false, error: 'Company is required' });
+    }
+    
+    console.log('Final company_id to use:', finalCompanyId);
+    
     const [result] = await pool.execute(
-      `INSERT INTO departments (company_id, name, head_id) VALUES (?, ?, ?)`,
-      [req.companyId, name, head_id]
+      `INSERT INTO departments (company_id, name) VALUES (?, ?)`,
+      [finalCompanyId, name.trim()]
     );
-    res.status(201).json({ success: true, data: { id: result.insertId } });
+    
+    console.log('Department created with ID:', result.insertId);
+    
+    // Fetch the created department with company name
+    const [newDepartment] = await pool.execute(
+      `SELECT d.*, c.name as company_name,
+       COALESCE((SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id), 0) as total_employees
+       FROM departments d
+       LEFT JOIN companies c ON d.company_id = c.id
+       WHERE d.id = ?`,
+      [result.insertId]
+    );
+    
+    console.log('Created department data:', JSON.stringify(newDepartment[0], null, 2));
+    
+    res.status(201).json({ 
+      success: true, 
+      data: newDepartment[0],
+      message: 'Department created successfully'
+    });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create department' });
+    console.error('Error creating department:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage
+    });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to create department',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -77,10 +140,10 @@ const getById = async (req, res) => {
     }
 
     const [departments] = await pool.execute(
-      `SELECT d.*, u.name as head_name, u.email as head_email,
+      `SELECT d.*, c.name as company_name,
        COALESCE((SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id), 0) as total_employees
        FROM departments d
-       LEFT JOIN users u ON d.head_id = u.id
+       LEFT JOIN companies c ON d.company_id = c.id
        WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0`,
       [id, req.companyId]
     );
@@ -103,11 +166,26 @@ const getById = async (req, res) => {
 const update = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, head_id } = req.body;
+    const { name, company_id } = req.body;
+    
+    if (!name) {
+      return res.status(400).json({ success: false, error: 'Department name is required' });
+    }
+    
+    const updateFields = ['name = ?'];
+    const updateValues = [name];
+    
+    // Update company_id if provided
+    if (company_id !== undefined) {
+      updateFields.push('company_id = ?');
+      updateValues.push(company_id);
+    }
+    
+    updateValues.push(id, req.companyId);
     
     const [result] = await pool.execute(
-      `UPDATE departments SET name = ?, head_id = ? WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [name, head_id, id, req.companyId]
+      `UPDATE departments SET ${updateFields.join(', ')} WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      updateValues
     );
     
     if (result.affectedRows === 0) {
@@ -116,6 +194,7 @@ const update = async (req, res) => {
     
     res.json({ success: true, message: 'Department updated successfully' });
   } catch (error) {
+    console.error('Error updating department:', error);
     res.status(500).json({ success: false, error: 'Failed to update department' });
   }
 };
