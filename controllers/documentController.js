@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const path = require('path');
 const fs = require('fs');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all documents for current user
@@ -9,6 +10,9 @@ const fs = require('fs');
 const getAll = async (req, res) => {
   try {
     const { category } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
     const params = [req.companyId];
@@ -28,12 +32,21 @@ const getAll = async (req, res) => {
       params.push(category);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM documents d ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated documents - LIMIT and OFFSET as template literals (not placeholders)
     const [documents] = await pool.execute(
       `SELECT d.*, u.name as user_name
        FROM documents d
        LEFT JOIN users u ON d.user_id = u.id
        ${whereClause}
-       ORDER BY d.created_at DESC`,
+       ORDER BY d.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -46,7 +59,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: formattedDocuments
+      data: formattedDocuments,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get documents error:', error);

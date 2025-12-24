@@ -4,6 +4,7 @@
 
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all clients
@@ -12,6 +13,9 @@ const bcrypt = require('bcryptjs');
 const getAll = async (req, res) => {
   try {
     const { status, search } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
     const params = [req.companyId];
@@ -26,12 +30,21 @@ const getAll = async (req, res) => {
       params.push(searchTerm, searchTerm);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM clients c ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated clients - LIMIT and OFFSET as template literals (not placeholders)
     const [clients] = await pool.execute(
       `SELECT c.*, u.name as owner_name
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
        ${whereClause}
-       ORDER BY c.created_at DESC`,
+       ORDER BY c.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -58,7 +71,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: clients
+      data: clients,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get clients error:', error);

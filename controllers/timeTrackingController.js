@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
@@ -8,7 +9,23 @@ const getAll = async (req, res) => {
         error: 'Company ID is required' 
       });
     }
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE tl.company_id = ? AND tl.is_deleted = 0 AND u.is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM time_logs tl
+       JOIN users u ON tl.user_id = u.id
+       ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
 
+    // Get paginated time logs - LIMIT and OFFSET as template literals (not placeholders)
     const [timeLogs] = await pool.execute(
       `SELECT 
         tl.id,
@@ -29,11 +46,16 @@ const getAll = async (req, res) => {
       JOIN users u ON tl.user_id = u.id
       LEFT JOIN projects p ON tl.project_id = p.id
       LEFT JOIN tasks t ON tl.task_id = t.id
-      WHERE tl.company_id = ? AND tl.is_deleted = 0 AND u.is_deleted = 0
-      ORDER BY tl.date DESC, u.name ASC`,
-      [req.companyId]
+      ${whereClause}
+      ORDER BY tl.date DESC, u.name ASC
+      LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
-    res.json({ success: true, data: timeLogs });
+    res.json({ 
+      success: true, 
+      data: timeLogs,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Get time logs error:', error);
     console.error('Error details:', {

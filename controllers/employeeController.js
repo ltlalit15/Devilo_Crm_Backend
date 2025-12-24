@@ -1,9 +1,13 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { status, department } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE u.company_id = ? AND u.is_deleted = 0';
     const params = [req.companyId];
@@ -17,6 +21,16 @@ const getAll = async (req, res) => {
       params.push(department);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM employees e
+       JOIN users u ON e.user_id = u.id
+       ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated employees - LIMIT and OFFSET as template literals (not placeholders)
     const [employees] = await pool.execute(
       `SELECT e.*, u.name, u.email, u.role as user_role, u.status, d.name as department_name, p.name as position_name
        FROM employees e
@@ -24,13 +38,15 @@ const getAll = async (req, res) => {
        LEFT JOIN departments d ON e.department_id = d.id
        LEFT JOIN positions p ON e.position_id = p.id
        ${whereClause}
-       ORDER BY e.created_at DESC`,
+       ORDER BY e.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
     res.json({
       success: true,
-      data: employees
+      data: employees,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get employees error:', error);

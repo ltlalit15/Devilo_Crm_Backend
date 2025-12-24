@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all company packages
@@ -19,6 +20,9 @@ const getAll = async (req, res) => {
     }
 
     const { status } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE cp.company_id = ? AND cp.is_deleted = 0';
     const params = [req.companyId];
@@ -28,12 +32,21 @@ const getAll = async (req, res) => {
       params.push(status);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM company_packages cp ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated packages - LIMIT and OFFSET as template literals (not placeholders)
     const [packages] = await pool.execute(
       `SELECT cp.*, 
               0 as companies_count
        FROM company_packages cp
        ${whereClause}
-       ORDER BY cp.created_at DESC`,
+       ORDER BY cp.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -55,7 +68,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: packagesWithFeatures
+      data: packagesWithFeatures,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get company packages error:', error);

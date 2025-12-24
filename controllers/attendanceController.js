@@ -1,7 +1,24 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE a.company_id = ? AND u.is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM attendance a
+       JOIN users u ON a.user_id = u.id
+       ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated attendance - LIMIT and OFFSET as template literals (not placeholders)
     const [attendance] = await pool.execute(
       `SELECT 
         a.id,
@@ -18,11 +35,16 @@ const getAll = async (req, res) => {
         u.email as employee_email
       FROM attendance a
       JOIN users u ON a.user_id = u.id
-      WHERE a.company_id = ? AND u.is_deleted = 0
-      ORDER BY a.date DESC, u.name ASC`,
-      [req.companyId]
+      ${whereClause}
+      ORDER BY a.date DESC, u.name ASC
+      LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
-    res.json({ success: true, data: attendance });
+    res.json({ 
+      success: true, 
+      data: attendance,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Get attendance error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch attendance' });

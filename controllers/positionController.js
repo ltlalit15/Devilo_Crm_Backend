@@ -1,23 +1,43 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     if (!req.companyId) {
       return res.status(400).json({ success: false, error: 'Company ID is required' });
     }
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM positions p ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
 
+    // Get paginated positions - LIMIT and OFFSET as template literals (not placeholders)
     const [positions] = await pool.execute(
       `SELECT p.*, 
               d.name as department_name,
               COALESCE((SELECT COUNT(*) FROM employees e WHERE e.position_id = p.id), 0) as total_employees
        FROM positions p
        LEFT JOIN departments d ON p.department_id = d.id
-       WHERE p.company_id = ? AND p.is_deleted = 0 
-       ORDER BY p.name`,
-      [req.companyId]
+       ${whereClause}
+       ORDER BY p.name
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
     
-    res.json({ success: true, data: positions });
+    res.json({ 
+      success: true, 
+      data: positions,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Get positions error:', error);
     res.status(500).json({ 

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
@@ -6,18 +7,37 @@ const getAll = async (req, res) => {
     if (!req.companyId) {
       return res.status(400).json({ success: false, error: 'Company ID is required' });
     }
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM departments d ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
 
+    // Get paginated departments - LIMIT and OFFSET as template literals (not placeholders)
     const [departments] = await pool.execute(
       `SELECT d.*, u.name as head_name, u.email as head_email,
        COALESCE((SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id), 0) as total_employees
        FROM departments d
        LEFT JOIN users u ON d.head_id = u.id
-       WHERE d.company_id = ? AND d.is_deleted = 0 
-       ORDER BY d.name`,
-      [req.companyId]
+       ${whereClause}
+       ORDER BY d.name
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
     
-    res.json({ success: true, data: departments });
+    res.json({ 
+      success: true, 
+      data: departments,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Error fetching departments:', error);
     console.error('Error details:', {

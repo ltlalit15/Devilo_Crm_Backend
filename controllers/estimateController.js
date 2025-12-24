@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateEstimateNumber = async (companyId) => {
   const [result] = await pool.execute(
@@ -15,13 +16,28 @@ const generateEstimateNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM estimates e ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated estimates - LIMIT and OFFSET as template literals (not placeholders)
     const [estimates] = await pool.execute(
       `SELECT e.*, c.company_name as client_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
-       WHERE e.company_id = ? AND e.is_deleted = 0
-       ORDER BY e.created_at DESC`,
-      [req.companyId]
+       ${whereClause}
+       ORDER BY e.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
     );
 
     for (let estimate of estimates) {
@@ -32,7 +48,11 @@ const getAll = async (req, res) => {
       estimate.items = items;
     }
 
-    res.json({ success: true, data: estimates });
+    res.json({ 
+      success: true, 
+      data: estimates,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Get estimates error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch estimates' });

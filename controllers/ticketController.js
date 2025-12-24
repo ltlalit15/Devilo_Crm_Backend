@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateTicketId = async (companyId) => {
   const [result] = await pool.execute(`SELECT COUNT(*) as count FROM tickets WHERE company_id = ?`, [companyId]);
@@ -8,11 +9,30 @@ const generateTicketId = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    const [tickets] = await pool.execute(
-      `SELECT * FROM tickets WHERE company_id = ? AND is_deleted = 0 ORDER BY created_at DESC`,
-      [req.companyId]
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE company_id = ? AND is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM tickets ${whereClause}`,
+      params
     );
-    res.json({ success: true, data: tickets });
+    const total = countResult[0].total;
+
+    // Get paginated tickets - LIMIT and OFFSET as template literals (not placeholders)
+    const [tickets] = await pool.execute(
+      `SELECT * FROM tickets ${whereClause} ORDER BY created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+    res.json({ 
+      success: true, 
+      data: tickets,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch tickets' });
   }

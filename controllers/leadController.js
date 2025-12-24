@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all leads
@@ -11,6 +12,9 @@ const pool = require('../config/db');
 const getAll = async (req, res) => {
   try {
     const { status, owner_id, source, city } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE l.company_id = ? AND l.is_deleted = 0';
     const params = [req.companyId];
@@ -32,13 +36,21 @@ const getAll = async (req, res) => {
       params.push(city);
     }
 
-    // Get leads with owner info
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM leads l ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated leads with owner info - LIMIT and OFFSET as template literals (not placeholders)
     const [leads] = await pool.execute(
       `SELECT l.*, u.name as owner_name, u.email as owner_email
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
        ${whereClause}
-       ORDER BY l.created_at DESC`,
+       ORDER BY l.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -61,7 +73,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: leads
+      data: leads,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get leads error:', error);

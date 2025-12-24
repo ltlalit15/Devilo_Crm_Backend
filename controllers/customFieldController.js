@@ -1,8 +1,13 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { module } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
     let whereClause = 'WHERE company_id = ? AND is_deleted = 0';
     const params = [req.companyId];
     
@@ -11,11 +16,24 @@ const getAll = async (req, res) => {
       params.push(module);
     }
 
-    const [fields] = await pool.execute(
-      `SELECT * FROM custom_fields ${whereClause} ORDER BY created_at DESC`,
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM custom_fields ${whereClause}`,
       params
     );
-    res.json({ success: true, data: fields });
+    const total = countResult[0].total;
+
+    // Get paginated custom fields - LIMIT and OFFSET as template literals (not placeholders)
+    const [fields] = await pool.execute(
+      `SELECT * FROM custom_fields ${whereClause} ORDER BY created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+    res.json({ 
+      success: true, 
+      data: fields,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch custom fields' });
   }

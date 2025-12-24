@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate invoice number
@@ -52,6 +53,9 @@ const calculateTotals = (items, discount, discountType) => {
 const getAll = async (req, res) => {
   try {
     const { status, client_id } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
     const params = [req.companyId];
@@ -65,12 +69,21 @@ const getAll = async (req, res) => {
       params.push(client_id);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM invoices i ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated invoices - LIMIT and OFFSET as template literals (not placeholders)
     const [invoices] = await pool.execute(
       `SELECT i.*, c.company_name as client_name
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
        ${whereClause}
-       ORDER BY i.created_at DESC`,
+       ORDER BY i.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -85,7 +98,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: invoices
+      data: invoices,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get invoices error:', error);

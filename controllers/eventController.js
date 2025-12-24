@@ -1,8 +1,12 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { year, month, start_date, end_date } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
     
     let whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
     const params = [req.companyId];
@@ -37,6 +41,14 @@ const getAll = async (req, res) => {
     }
     */
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM events e ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated events - LIMIT and OFFSET as template literals (not placeholders)
     const [events] = await pool.execute(
       `SELECT e.*, 
               u.name as host_name,
@@ -44,7 +56,8 @@ const getAll = async (req, res) => {
        FROM events e
        LEFT JOIN users u ON e.host_id = u.id
        ${whereClause}
-       ORDER BY e.starts_on_date ASC, e.starts_on_time ASC`,
+       ORDER BY e.starts_on_date ASC, e.starts_on_time ASC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -83,7 +96,11 @@ const getAll = async (req, res) => {
     }
 
     console.log(`Fetched ${events.length} events for company ${req.companyId}, year ${year || 'all'}, month ${month || 'all'}`);
-    res.json({ success: true, data: events });
+    res.json({ 
+      success: true, 
+      data: events,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     console.error('Get events error:', error);
     console.error('Error stack:', error.stack);

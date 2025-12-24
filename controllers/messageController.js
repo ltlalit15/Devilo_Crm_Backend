@@ -1,12 +1,32 @@
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    const [messages] = await pool.execute(
-      `SELECT * FROM messages WHERE company_id = ? AND is_deleted = 0 ORDER BY created_at DESC`,
-      [req.companyId]
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    
+    const whereClause = 'WHERE company_id = ? AND is_deleted = 0';
+    const params = [req.companyId];
+    
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM messages ${whereClause}`,
+      params
     );
-    res.json({ success: true, data: messages });
+    const total = countResult[0].total;
+
+    // Get paginated messages - LIMIT and OFFSET as template literals (not placeholders)
+    const [messages] = await pool.execute(
+      `SELECT * FROM messages ${whereClause} ORDER BY created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+    res.json({ 
+      success: true, 
+      data: messages,
+      pagination: getPaginationMeta(total, page, pageSize)
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch messages' });
   }

@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all payments
@@ -11,6 +12,9 @@ const pool = require('../config/db');
 const getAll = async (req, res) => {
   try {
     const { client_id, invoice_id } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
     const params = [req.companyId];
@@ -26,19 +30,29 @@ const getAll = async (req, res) => {
       params.push(invoice_id);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM payments p ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated payments - LIMIT and OFFSET as template literals (not placeholders)
     const [payments] = await pool.execute(
       `SELECT p.*, i.invoice_number, c.company_name as client_name
        FROM payments p
        LEFT JOIN invoices i ON p.invoice_id = i.id
        LEFT JOIN clients c ON i.client_id = c.id
        ${whereClause}
-       ORDER BY p.created_at DESC`,
+       ORDER BY p.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
     res.json({
       success: true,
-      data: payments
+      data: payments,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get payments error:', error);

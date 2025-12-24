@@ -3,6 +3,7 @@
 // =====================================================
 
 const pool = require('../config/db');
+const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate task code
@@ -46,6 +47,9 @@ const generateTaskCode = async (projectId, companyId) => {
 const getAll = async (req, res) => {
   try {
     const { status, project_id, assigned_to } = req.query;
+    
+    // Parse pagination parameters
+    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE t.company_id = ? AND t.is_deleted = 0';
     const params = [req.companyId];
@@ -65,12 +69,21 @@ const getAll = async (req, res) => {
       params.push(assigned_to);
     }
 
+    // Get total count for pagination
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM tasks t ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Get paginated tasks - LIMIT and OFFSET as template literals (not placeholders)
     const [tasks] = await pool.execute(
       `SELECT t.*, p.project_name, p.short_code as project_code
        FROM tasks t
        LEFT JOIN projects p ON t.project_id = p.id
        ${whereClause}
-       ORDER BY t.created_at DESC`,
+       ORDER BY t.created_at DESC
+       LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
@@ -93,7 +106,8 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: tasks
+      data: tasks,
+      pagination: getPaginationMeta(total, page, pageSize)
     });
   } catch (error) {
     console.error('Get tasks error:', error);
