@@ -142,7 +142,9 @@ const logout = async (req, res) => {
 const getCurrentUser = async (req, res) => {
   try {
     const [users] = await pool.execute(
-      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address, u.created_at,
+      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address,
+              u.emergency_contact_name, u.emergency_contact_phone, u.emergency_contact_relation,
+              u.bank_name, u.bank_account_number, u.bank_ifsc, u.bank_branch, u.created_at,
               e.department_id, e.position_id,
               d.name as department_name,
               p.name as position_name
@@ -173,6 +175,13 @@ const getCurrentUser = async (req, res) => {
       avatar: user.avatar,
       phone: user.phone,
       address: user.address,
+      emergency_contact_name: user.emergency_contact_name,
+      emergency_contact_phone: user.emergency_contact_phone,
+      emergency_contact_relation: user.emergency_contact_relation,
+      bank_name: user.bank_name,
+      bank_account_number: user.bank_account_number,
+      bank_ifsc: user.bank_ifsc,
+      bank_branch: user.bank_branch,
       department_id: user.department_id,
       department: user.department_name,
       position_id: user.position_id,
@@ -199,7 +208,11 @@ const getCurrentUser = async (req, res) => {
  */
 const updateCurrentUser = async (req, res) => {
   try {
-    const { name, email, phone, address } = req.body;
+    const { 
+      name, email, phone, address,
+      emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
+      bank_name, bank_account_number, bank_ifsc, bank_branch
+    } = req.body;
 
     // Build update fields
     const updateFields = [];
@@ -226,11 +239,39 @@ const updateCurrentUser = async (req, res) => {
     }
     if (phone !== undefined) {
       updateFields.push('phone = ?');
-      updateValues.push(phone);
+      updateValues.push(phone || null);
     }
     if (address !== undefined) {
       updateFields.push('address = ?');
-      updateValues.push(address);
+      updateValues.push(address || null);
+    }
+    if (emergency_contact_name !== undefined) {
+      updateFields.push('emergency_contact_name = ?');
+      updateValues.push(emergency_contact_name || null);
+    }
+    if (emergency_contact_phone !== undefined) {
+      updateFields.push('emergency_contact_phone = ?');
+      updateValues.push(emergency_contact_phone || null);
+    }
+    if (emergency_contact_relation !== undefined) {
+      updateFields.push('emergency_contact_relation = ?');
+      updateValues.push(emergency_contact_relation || null);
+    }
+    if (bank_name !== undefined) {
+      updateFields.push('bank_name = ?');
+      updateValues.push(bank_name || null);
+    }
+    if (bank_account_number !== undefined) {
+      updateFields.push('bank_account_number = ?');
+      updateValues.push(bank_account_number || null);
+    }
+    if (bank_ifsc !== undefined) {
+      updateFields.push('bank_ifsc = ?');
+      updateValues.push(bank_ifsc || null);
+    }
+    if (bank_branch !== undefined) {
+      updateFields.push('bank_branch = ?');
+      updateValues.push(bank_branch || null);
     }
 
     if (updateFields.length === 0) {
@@ -249,7 +290,9 @@ const updateCurrentUser = async (req, res) => {
 
     // Get updated user
     const [users] = await pool.execute(
-      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address, u.created_at,
+      `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address,
+              u.emergency_contact_name, u.emergency_contact_phone, u.emergency_contact_relation,
+              u.bank_name, u.bank_account_number, u.bank_ifsc, u.bank_branch, u.created_at,
               e.department_id, e.position_id,
               d.name as department_name,
               p.name as position_name
@@ -272,6 +315,13 @@ const updateCurrentUser = async (req, res) => {
       avatar: user.avatar,
       phone: user.phone,
       address: user.address,
+      emergency_contact_name: user.emergency_contact_name,
+      emergency_contact_phone: user.emergency_contact_phone,
+      emergency_contact_relation: user.emergency_contact_relation,
+      bank_name: user.bank_name,
+      bank_account_number: user.bank_account_number,
+      bank_ifsc: user.bank_ifsc,
+      bank_branch: user.bank_branch,
       department_id: user.department_id,
       department: user.department_name,
       position_id: user.position_id,
@@ -293,10 +343,77 @@ const updateCurrentUser = async (req, res) => {
   }
 };
 
+/**
+ * Change password
+ * PUT /api/v1/auth/change-password
+ */
+const changePassword = async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Current password and new password are required'
+      });
+    }
+
+    if (new_password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'New password must be at least 6 characters long'
+      });
+    }
+
+    // Get current user password
+    const [users] = await pool.execute(
+      `SELECT password FROM users WHERE id = ? AND is_deleted = 0`,
+      [req.userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Verify current password
+    const isPasswordValid = await bcrypt.compare(current_password, users[0].password);
+    if (!isPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        error: 'Current password is incorrect'
+      });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+
+    // Update password
+    await pool.execute(
+      `UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [hashedPassword, req.userId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to change password'
+    });
+  }
+};
+
 module.exports = {
   login,
   logout,
   getCurrentUser,
-  updateCurrentUser
+  updateCurrentUser,
+  changePassword
 };
 

@@ -107,5 +107,153 @@ const create = async (req, res) => {
   }
 };
 
-module.exports = { getAll, create };
+const update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { project_id, task_id, hours, date, description } = req.body;
+    
+    // Check if time log exists and belongs to user or company
+    const [existing] = await pool.execute(
+      `SELECT id, user_id FROM time_logs WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Time log not found'
+      });
+    }
+
+    // For employees, only allow updating their own logs
+    if (req.user.role === 'EMPLOYEE' && existing[0].user_id !== req.userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only update your own time logs'
+      });
+    }
+
+    // Build update query
+    const updates = [];
+    const values = [];
+
+    if (project_id !== undefined) {
+      updates.push('project_id = ?');
+      values.push(project_id);
+    }
+    if (task_id !== undefined) {
+      updates.push('task_id = ?');
+      values.push(task_id || null);
+    }
+    if (hours !== undefined) {
+      updates.push('hours = ?');
+      values.push(hours);
+    }
+    if (date !== undefined) {
+      updates.push('date = ?');
+      values.push(date);
+    }
+    if (description !== undefined) {
+      updates.push('description = ?');
+      values.push(description || null);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No fields to update'
+      });
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    values.push(id);
+
+    await pool.execute(
+      `UPDATE time_logs SET ${updates.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    // Get updated time log
+    const [timeLogs] = await pool.execute(
+      `SELECT 
+        tl.id,
+        tl.company_id,
+        tl.user_id,
+        tl.project_id,
+        tl.task_id,
+        tl.hours,
+        tl.date,
+        tl.description,
+        tl.created_at,
+        tl.updated_at,
+        u.name as employee_name,
+        u.email as employee_email,
+        p.project_name as project_name,
+        t.title as task_title
+       FROM time_logs tl
+       JOIN users u ON tl.user_id = u.id
+       LEFT JOIN projects p ON tl.project_id = p.id
+       LEFT JOIN tasks t ON tl.task_id = t.id
+       WHERE tl.id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: timeLogs[0],
+      message: 'Time log updated successfully'
+    });
+  } catch (error) {
+    console.error('Update time log error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to update time log'
+    });
+  }
+};
+
+const deleteTimeLog = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if time log exists
+    const [existing] = await pool.execute(
+      `SELECT id, user_id FROM time_logs WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Time log not found'
+      });
+    }
+
+    // For employees, only allow deleting their own logs
+    if (req.user.role === 'EMPLOYEE' && existing[0].user_id !== req.userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only delete your own time logs'
+      });
+    }
+
+    await pool.execute(
+      `UPDATE time_logs SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Time log deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete time log error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to delete time log'
+    });
+  }
+};
+
+module.exports = { getAll, create, update, delete: deleteTimeLog };
 

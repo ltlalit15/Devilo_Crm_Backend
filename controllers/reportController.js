@@ -176,29 +176,47 @@ const getEmployeePerformanceReport = async (req, res) => {
     const { start_date, end_date, company_id } = req.query;
     const filterCompanyId = company_id || req.companyId;
     
-    let whereClause = 'WHERE e.is_deleted = 0';
+    let whereClause = 'WHERE u.is_deleted = 0 AND u.role = "EMPLOYEE"';
     const params = [];
     
     if (filterCompanyId) {
-      whereClause += ' AND e.company_id = ?';
+      whereClause += ' AND u.company_id = ?';
       params.push(filterCompanyId);
     }
     
+    if (start_date) {
+      whereClause += ' AND DATE(t.completed_on) >= ?';
+      params.push(start_date);
+    }
+    
+    if (end_date) {
+      whereClause += ' AND DATE(t.completed_on) <= ?';
+      params.push(end_date);
+    }
+    
     // Get employee performance metrics
+    // Join employees with users to get name and email
+    // Join with task_assignees and tasks for completed tasks
+    // Join with project_members and projects for assigned projects
+    // Join with time_logs for hours logged
     const [performance] = await pool.execute(
       `SELECT 
         e.id,
-        e.name,
-        e.email,
-        COUNT(DISTINCT t.id) as tasks_completed,
+        u.id as user_id,
+        u.name,
+        u.email,
+        COUNT(DISTINCT CASE WHEN t.status = 'Done' THEN t.id END) as tasks_completed,
         COUNT(DISTINCT p.id) as projects_assigned,
-        SUM(tt.hours) as hours_logged
+        COALESCE(SUM(tt.hours), 0) as hours_logged
        FROM employees e
-       LEFT JOIN tasks t ON e.id = t.assigned_to AND t.status = 'Completed'
-       LEFT JOIN projects p ON e.company_id = p.company_id
-       LEFT JOIN time_logs tt ON e.id = tt.employee_id
+       INNER JOIN users u ON e.user_id = u.id
+       LEFT JOIN task_assignees ta ON u.id = ta.user_id
+       LEFT JOIN tasks t ON ta.task_id = t.id AND t.status = 'Done' AND t.is_deleted = 0
+       LEFT JOIN project_members pm ON u.id = pm.user_id
+       LEFT JOIN projects p ON pm.project_id = p.id AND p.is_deleted = 0
+       LEFT JOIN time_logs tt ON u.id = tt.user_id AND tt.is_deleted = 0
        ${whereClause}
-       GROUP BY e.id, e.name, e.email
+       GROUP BY e.id, u.id, u.name, u.email
        ORDER BY tasks_completed DESC`,
       params
     );

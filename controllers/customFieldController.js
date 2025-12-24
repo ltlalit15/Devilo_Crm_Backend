@@ -73,13 +73,43 @@ const getAll = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const { company_id, name, label, type, module, required, options, defaultValue, placeholder, helpText, visibility, enabledIn } = req.body;
+    // Support both field_name/field_label/field_type and name/label/type formats
+    const { 
+      company_id, 
+      name, 
+      label, 
+      type, 
+      module, 
+      required, 
+      options, 
+      defaultValue, 
+      placeholder, 
+      helpText, 
+      visibility, 
+      enabledIn,
+      // Frontend format
+      field_name,
+      field_label,
+      field_type,
+      default_value,
+      help_text,
+      enabled_in
+    } = req.body;
+    
+    // Map frontend format to backend format
+    const fieldName = name || field_name;
+    const fieldLabel = label || field_label;
+    const fieldType = type || field_type;
+    const fieldModule = module;
+    const fieldDefaultValue = defaultValue || default_value;
+    const fieldHelpText = helpText || help_text;
+    const fieldEnabledIn = enabledIn || enabled_in;
     
     // Validation
-    if (!name || !label || !type || !module) {
+    if (!fieldName || !fieldLabel || !fieldType || !fieldModule) {
       return res.status(400).json({
         success: false,
-        error: 'name, label, type, and module are required'
+        error: 'name (or field_name), label (or field_label), type (or field_type), and module are required'
       });
     }
 
@@ -99,14 +129,14 @@ const create = async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
-        name,
-        label,
-        type,
-        module,
+        fieldName,
+        fieldLabel,
+        fieldType,
+        fieldModule,
         required ? 1 : 0,
-        defaultValue || null,
+        fieldDefaultValue || null,
         placeholder || null,
-        helpText || null
+        fieldHelpText || null
       ]
     );
 
@@ -135,7 +165,7 @@ const create = async (req, res) => {
     }
 
     // Insert enabled_in settings
-    const enabledInList = enabledIn && Array.isArray(enabledIn) ? enabledIn : ['create', 'edit'];
+    const enabledInList = fieldEnabledIn && Array.isArray(fieldEnabledIn) ? fieldEnabledIn : ['create', 'edit'];
     for (const enabled of enabledInList) {
       await pool.execute(
         `INSERT INTO custom_field_enabled_in (custom_field_id, enabled_in)

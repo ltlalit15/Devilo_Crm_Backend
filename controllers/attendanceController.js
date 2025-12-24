@@ -3,11 +3,34 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
+    const { user_id, month, year } = req.query;
+    
     // Parse pagination parameters
     const { page, pageSize, limit, offset } = parsePagination(req.query);
     
-    const whereClause = 'WHERE a.company_id = ? AND u.is_deleted = 0';
+    let whereClause = 'WHERE a.company_id = ? AND u.is_deleted = 0';
     const params = [req.companyId];
+    
+    // Filter by user_id if provided (for employee dashboard)
+    if (user_id) {
+      whereClause += ' AND a.user_id = ?';
+      params.push(user_id);
+    } else if (req.user && req.user.role === 'EMPLOYEE') {
+      // For employees, only show their own attendance
+      whereClause += ' AND a.user_id = ?';
+      params.push(req.userId);
+    }
+    
+    // Filter by month and year if provided
+    if (month && year) {
+      const monthNum = parseInt(month);
+      const yearNum = parseInt(year);
+      const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`;
+      const lastDay = new Date(yearNum, monthNum, 0).getDate();
+      const endDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      whereClause += ' AND a.date >= ? AND a.date <= ?';
+      params.push(startDate, endDate);
+    }
     
     // Get total count for pagination
     const [countResult] = await pool.execute(
@@ -32,7 +55,8 @@ const getAll = async (req, res) => {
         a.created_at,
         a.updated_at,
         u.name as employee_name,
-        u.email as employee_email
+        u.email as employee_email,
+        TIMESTAMPDIFF(HOUR, CONCAT(a.date, ' ', a.check_in), CONCAT(a.date, ' ', COALESCE(a.check_out, NOW()))) as total_hours
       FROM attendance a
       JOIN users u ON a.user_id = u.id
       ${whereClause}
@@ -48,6 +72,123 @@ const getAll = async (req, res) => {
   } catch (error) {
     console.error('Get attendance error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch attendance' });
+  }
+};
+
+/**
+ * Get monthly calendar attendance
+ * GET /api/v1/attendance/calendar?month=12&year=2025
+ */
+const getMonthlyCalendar = async (req, res) => {
+  try {
+    const { month, year, user_id } = req.query;
+    const userId = user_id || req.userId;
+    
+    if (!month || !year) {
+      return res.status(400).json({
+        success: false,
+        error: 'Month and year are required'
+      });
+    }
+
+    const monthNum = parseInt(month);
+    const yearNum = parseInt(year);
+    const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`;
+    const lastDay = new Date(yearNum, monthNum, 0).getDate();
+    const endDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+    const [attendance] = await pool.execute(
+      `SELECT 
+        a.date,
+        a.check_in,
+        a.check_out,
+        a.status,
+        TIMESTAMPDIFF(HOUR, CONCAT(a.date, ' ', a.check_in), CONCAT(a.date, ' ', COALESCE(a.check_out, NOW()))) as total_hours
+      FROM attendance a
+      WHERE a.company_id = ? AND a.user_id = ? AND a.date >= ? AND a.date <= ?
+      ORDER BY a.date ASC`,
+      [req.companyId, userId, startDate, endDate]
+    );
+
+    // Calculate attendance percentage
+    const totalDays = lastDay;
+    const presentDays = attendance.filter(a => a.status === 'Present').length;
+    const attendancePercentage = totalDays > 0 ? ((presentDays / totalDays) * 100).toFixed(2) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        calendar: attendance,
+        attendance_percentage: parseFloat(attendancePercentage),
+        total_days: totalDays,
+        present_days: presentDays,
+        absent_days: totalDays - presentDays
+      }
+    });
+  } catch (error) {
+    console.error('Get monthly calendar error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch monthly calendar'
+    });
+  }
+};
+
+/**
+ * Get attendance percentage
+ * GET /api/v1/attendance/percentage?month=12&year=2025
+ */
+const getAttendancePercentage = async (req, res) => {
+  try {
+    const { month, year, user_id } = req.query;
+    const userId = user_id || req.userId;
+    
+    if (!month || !year) {
+      return res.status(400).json({
+        success: false,
+        error: 'Month and year are required'
+      });
+    }
+
+    const monthNum = parseInt(month);
+    const yearNum = parseInt(year);
+    const startDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-01`;
+    const lastDay = new Date(yearNum, monthNum, 0).getDate();
+    const endDate = `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+    const [stats] = await pool.execute(
+      `SELECT 
+        COUNT(*) as total_days,
+        SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) as present_days,
+        SUM(CASE WHEN status = 'Absent' THEN 1 ELSE 0 END) as absent_days,
+        SUM(CASE WHEN status = 'Late' THEN 1 ELSE 0 END) as late_days,
+        SUM(CASE WHEN status = 'Half Day' THEN 1 ELSE 0 END) as half_days
+      FROM attendance
+      WHERE company_id = ? AND user_id = ? AND date >= ? AND date <= ?`,
+      [req.companyId, userId, startDate, endDate]
+    );
+
+    const totalDays = lastDay;
+    const presentDays = stats[0].present_days || 0;
+    const attendancePercentage = totalDays > 0 ? ((presentDays / totalDays) * 100).toFixed(2) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        attendance_percentage: parseFloat(attendancePercentage),
+        total_days: totalDays,
+        present_days: presentDays,
+        absent_days: stats[0].absent_days || 0,
+        late_days: stats[0].late_days || 0,
+        half_days: stats[0].half_days || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get attendance percentage error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch attendance percentage'
+    });
   }
 };
 
@@ -79,5 +220,5 @@ const checkOut = async (req, res) => {
   }
 };
 
-module.exports = { getAll, checkIn, checkOut };
+module.exports = { getAll, checkIn, checkOut, getMonthlyCalendar, getAttendancePercentage };
 

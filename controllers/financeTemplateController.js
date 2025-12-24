@@ -299,11 +299,160 @@ const deleteTemplate = async (req, res) => {
   }
 };
 
+/**
+ * Generate report using template
+ * POST /api/v1/finance-templates/:id/generate-report
+ */
+const generateReport = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data, format = 'pdf' } = req.body; // data: invoice/proposal/estimate data, format: 'pdf' | 'excel' | 'html'
+
+    // Get template
+    const [templates] = await pool.execute(
+      `SELECT * FROM finance_templates WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (templates.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Finance template not found'
+      });
+    }
+
+    const template = templates[0];
+    const templateData = template.template_data ? JSON.parse(template.template_data) : {};
+
+    // Generate report based on format
+    if (format === 'pdf') {
+      // For PDF generation, return template data and document data
+      // In production, you would use a library like pdfkit or puppeteer
+      res.json({
+        success: true,
+        data: {
+          template: templateData,
+          document: data,
+          format: 'pdf',
+          message: 'PDF report generated successfully. In production, this would return a PDF file.'
+        }
+      });
+    } else if (format === 'excel') {
+      // For Excel generation, return CSV-like data
+      res.json({
+        success: true,
+        data: {
+          template: templateData,
+          document: data,
+          format: 'excel',
+          message: 'Excel report generated successfully. In production, this would return an Excel file.'
+        }
+      });
+    } else {
+      // HTML format
+      res.json({
+        success: true,
+        data: {
+          template: templateData,
+          document: data,
+          format: 'html',
+          html: generateHTMLReport(templateData, data)
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Generate report error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to generate report'
+    });
+  }
+};
+
+/**
+ * Generate HTML report from template and data
+ */
+const generateHTMLReport = (templateData, documentData) => {
+  const primaryColor = templateData.primaryColor || '#3B82F6';
+  const secondaryColor = templateData.secondaryColor || '#1E40AF';
+  const logo = templateData.logo || '';
+  const template = templateData.template || '';
+
+  let html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>${documentData.type || 'Document'} Report</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { display: flex; justify-content: space-between; margin-bottom: 30px; }
+        .logo { max-width: 150px; }
+        .content { color: #333; }
+        .primary-color { color: ${primaryColor}; }
+        .secondary-color { color: ${secondaryColor}; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: ${primaryColor}; color: white; }
+        .total { font-weight: bold; text-align: right; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        ${logo ? `<img src="${logo}" alt="Logo" class="logo">` : '<div></div>'}
+        <div>
+          <h1 class="primary-color">${documentData.type || 'Document'}</h1>
+          <p>${documentData.number || ''}</p>
+        </div>
+      </div>
+      <div class="content">
+        ${template || generateDefaultTemplate(documentData)}
+      </div>
+    </body>
+    </html>
+  `;
+
+  return html;
+};
+
+/**
+ * Generate default template HTML
+ */
+const generateDefaultTemplate = (data) => {
+  let html = '<div>';
+  
+  if (data.client_name) {
+    html += `<p><strong>Client:</strong> ${data.client_name}</p>`;
+  }
+  if (data.date) {
+    html += `<p><strong>Date:</strong> ${data.date}</p>`;
+  }
+  if (data.items && data.items.length > 0) {
+    html += '<table><thead><tr><th>Description</th><th>Quantity</th><th>Rate</th><th>Amount</th></tr></thead><tbody>';
+    data.items.forEach(item => {
+      html += `<tr>
+        <td>${item.description || item.name || '-'}</td>
+        <td>${item.quantity || 0}</td>
+        <td>$${parseFloat(item.rate || item.price || 0).toFixed(2)}</td>
+        <td>$${parseFloat(item.amount || item.total || 0).toFixed(2)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  if (data.total) {
+    html += `<p class="total">Total: $${parseFloat(data.total).toFixed(2)}</p>`;
+  }
+  
+  html += '</div>';
+  return html;
+};
+
 module.exports = { 
   getAll, 
   getById, 
   create, 
   update, 
-  delete: deleteTemplate
+  delete: deleteTemplate,
+  generateReport
 };
 

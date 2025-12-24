@@ -17,6 +17,7 @@ const projectRoutes = require('./routes/projectRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const estimateRoutes = require('./routes/estimateRoutes');
+const proposalRoutes = require('./routes/proposalRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 const contractRoutes = require('./routes/contractRoutes');
@@ -35,6 +36,11 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const companyPackageRoutes = require('./routes/companyPackageRoutes');
 const companyRoutes = require('./routes/companyRoutes');
 const documentRoutes = require('./routes/documentRoutes');
+const socialMediaIntegrationRoutes = require('./routes/socialMediaIntegrationRoutes');
+const reportRoutes = require('./routes/reportRoutes');
+const emailTemplateRoutes = require('./routes/emailTemplateRoutes');
+const financeTemplateRoutes = require('./routes/financeTemplateRoutes');
+const creditNoteRoutes = require('./routes/creditNoteRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,6 +52,8 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 
 // Security
 app.use(helmet());
+
+// CORS
 app.set('trust proxy', 1);
 
 // CORS
@@ -57,7 +65,6 @@ app.use(cors({
   ].filter(Boolean),
   credentials: true
 }));
-
 
 // Body parser
 app.use(express.json({ limit: '10mb' }));
@@ -98,6 +105,7 @@ app.use(`${apiBase}/projects`, projectRoutes);
 app.use(`${apiBase}/tasks`, taskRoutes);
 app.use(`${apiBase}/invoices`, invoiceRoutes);
 app.use(`${apiBase}/estimates`, estimateRoutes);
+app.use(`${apiBase}/proposals`, proposalRoutes);
 app.use(`${apiBase}/payments`, paymentRoutes);
 app.use(`${apiBase}/expenses`, expenseRoutes);
 app.use(`${apiBase}/contracts`, contractRoutes);
@@ -115,6 +123,11 @@ app.use(`${apiBase}/settings`, settingsRoutes);
 app.use(`${apiBase}/company-packages`, companyPackageRoutes);
 app.use(`${apiBase}/companies`, companyRoutes);
 app.use(`${apiBase}/documents`, documentRoutes);
+app.use(`${apiBase}/social-media-integrations`, socialMediaIntegrationRoutes);
+app.use(`${apiBase}/reports`, reportRoutes);
+app.use(`${apiBase}/email-templates`, emailTemplateRoutes);
+app.use(`${apiBase}/finance-templates`, financeTemplateRoutes);
+app.use(`${apiBase}/credit-notes`, creditNoteRoutes);
 
 // 404 handler
 app.use((req, res) => {

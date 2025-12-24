@@ -9,6 +9,7 @@ router.get('/:id', optionalAuth, financeTemplateController.getById);
 router.post('/', optionalAuth, requireRole(['ADMIN']), financeTemplateController.create);
 router.put('/:id', optionalAuth, requireRole(['ADMIN']), financeTemplateController.update);
 router.delete('/:id', optionalAuth, requireRole(['ADMIN']), financeTemplateController.delete);
+router.post('/:id/generate-report', optionalAuth, financeTemplateController.generateReport);
 
 module.exports = router;
 

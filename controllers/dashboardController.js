@@ -157,7 +157,11 @@ const getClientDashboard = async (req, res) => {
           my_projects: 0,
           my_tasks: 0,
           outstanding_invoices: 0,
-          total_payments: 0
+          total_payments: 0,
+          contracts_count: 0,
+          estimates_count: 0,
+          credit_notes_count: 0,
+          contacts_count: 0
         }
       });
     }
@@ -169,7 +173,11 @@ const getClientDashboard = async (req, res) => {
       [projectsCount],
       [tasksCount],
       [invoices],
-      [payments]
+      [payments],
+      [contractsCount],
+      [estimatesCount],
+      [creditNotesCount],
+      [contactsCount]
     ] = await Promise.all([
       pool.execute(
         `SELECT COUNT(*) as total FROM projects WHERE client_id = ? AND is_deleted = 0`,
@@ -190,6 +198,22 @@ const getClientDashboard = async (req, res) => {
            SELECT id FROM invoices WHERE client_id = ?
          ) AND is_deleted = 0`,
         [clientId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM contracts WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM estimates WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM credit_notes WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
+      ),
+      pool.execute(
+        `SELECT COUNT(*) as total FROM client_contacts WHERE client_id = ? AND is_deleted = 0`,
+        [clientId]
       )
     ]);
 
@@ -199,7 +223,11 @@ const getClientDashboard = async (req, res) => {
         my_projects: projectsCount[0].total,
         my_tasks: tasksCount[0].total,
         outstanding_invoices: invoices[0].total || 0,
-        total_payments: payments[0].total || 0
+        total_payments: payments[0].total || 0,
+        contracts_count: contractsCount[0].total,
+        estimates_count: estimatesCount[0].total,
+        credit_notes_count: creditNotesCount[0].total,
+        contacts_count: contactsCount[0].total
       }
     });
   } catch (error) {
@@ -211,9 +239,187 @@ const getClientDashboard = async (req, res) => {
   }
 };
 
+/**
+ * Get client work data (projects and tasks)
+ * GET /api/v1/dashboard/client/work
+ */
+const getClientWork = async (req, res) => {
+  try {
+    const userId = req.userId;
+
+    // Get client ID from user
+    const [clients] = await pool.execute(
+      `SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
+      [userId, req.companyId]
+    );
+
+    if (clients.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          projects: [],
+          tasks: []
+        }
+      });
+    }
+
+    const clientId = clients[0].id;
+
+    // Get projects and tasks
+    const [projects] = await pool.execute(
+      `SELECT p.*, c.company_name as client_name 
+       FROM projects p
+       LEFT JOIN clients c ON p.client_id = c.id
+       WHERE p.client_id = ? AND p.is_deleted = 0
+       ORDER BY p.created_at DESC
+       LIMIT 10`,
+      [clientId]
+    );
+
+    const projectIds = projects.map(p => p.id);
+    let tasks = [];
+    if (projectIds.length > 0) {
+      const [tasksResult] = await pool.execute(
+        `SELECT t.*, p.project_name, u.name as assigned_to_name
+         FROM tasks t
+         LEFT JOIN projects p ON t.project_id = p.id
+         LEFT JOIN users u ON t.created_by = u.id
+         WHERE t.project_id IN (${projectIds.map(() => '?').join(',')}) AND t.is_deleted = 0
+         ORDER BY t.created_at DESC
+         LIMIT 20`,
+        projectIds
+      );
+      tasks = tasksResult;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        projects: projects || [],
+        tasks: tasks || []
+      }
+    });
+  } catch (error) {
+    console.error('Get client work error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch work data'
+    });
+  }
+};
+
+/**
+ * Get client finance data (invoices, payments, estimates, contracts, credit notes)
+ * GET /api/v1/dashboard/client/finance
+ */
+const getClientFinance = async (req, res) => {
+  try {
+    const userId = req.userId;
+
+    // Get client ID from user
+    const [clients] = await pool.execute(
+      `SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
+      [userId, req.companyId]
+    );
+
+    if (clients.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          invoices: [],
+          payments: [],
+          estimates: [],
+          contracts: [],
+          credit_notes: []
+        }
+      });
+    }
+
+    const clientId = clients[0].id;
+
+    // Get invoices, payments, estimates, contracts, and credit notes
+    const [invoices] = await pool.execute(
+      `SELECT i.*, c.company_name as client_name
+       FROM invoices i
+       LEFT JOIN clients c ON i.client_id = c.id
+       WHERE i.client_id = ? AND i.is_deleted = 0
+       ORDER BY i.created_at DESC
+       LIMIT 10`,
+      [clientId]
+    );
+
+    const invoiceIds = invoices.map(i => i.id);
+    let payments = [];
+    if (invoiceIds.length > 0) {
+      const [paymentsResult] = await pool.execute(
+        `SELECT p.*, i.invoice_number
+         FROM payments p
+         LEFT JOIN invoices i ON p.invoice_id = i.id
+         WHERE p.invoice_id IN (${invoiceIds.map(() => '?').join(',')}) AND p.is_deleted = 0
+         ORDER BY p.created_at DESC
+         LIMIT 10`,
+        invoiceIds
+      );
+      payments = paymentsResult;
+    }
+
+    // Get estimates
+    const [estimates] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       WHERE e.client_id = ? AND e.is_deleted = 0
+       ORDER BY e.created_at DESC
+       LIMIT 10`,
+      [clientId]
+    );
+
+    // Get contracts
+    const [contracts] = await pool.execute(
+      `SELECT ct.*, c.company_name as client_name
+       FROM contracts ct
+       LEFT JOIN clients c ON ct.client_id = c.id
+       WHERE ct.client_id = ? AND ct.is_deleted = 0
+       ORDER BY ct.created_at DESC
+       LIMIT 10`,
+      [clientId]
+    );
+
+    // Get credit notes
+    const [creditNotes] = await pool.execute(
+      `SELECT cn.*, c.company_name as client_name
+       FROM credit_notes cn
+       LEFT JOIN clients c ON cn.client_id = c.id
+       WHERE cn.client_id = ? AND cn.is_deleted = 0
+       ORDER BY cn.created_at DESC
+       LIMIT 10`,
+      [clientId]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        invoices: invoices || [],
+        payments: payments || [],
+        estimates: estimates || [],
+        contracts: contracts || [],
+        credit_notes: creditNotes || []
+      }
+    });
+  } catch (error) {
+    console.error('Get client finance error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch finance data'
+    });
+  }
+};
+
 module.exports = {
   getAdminDashboard,
   getEmployeeDashboard,
-  getClientDashboard
+  getClientDashboard,
+  getClientWork,
+  getClientFinance
 };
 

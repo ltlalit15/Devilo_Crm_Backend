@@ -169,6 +169,28 @@ const getById = async (req, res) => {
     );
     task.tags = tags.map(t => t.tag);
 
+    // Get comments
+    const [comments] = await pool.execute(
+      `SELECT tc.*, u.name as user_name, u.email as user_email, u.avatar
+       FROM task_comments tc
+       JOIN users u ON tc.user_id = u.id
+       WHERE tc.task_id = ? AND tc.is_deleted = 0
+       ORDER BY tc.created_at ASC`,
+      [task.id]
+    );
+    task.comments = comments;
+
+    // Get files
+    const [files] = await pool.execute(
+      `SELECT tf.*, u.name as user_name
+       FROM task_files tf
+       JOIN users u ON tf.user_id = u.id
+       WHERE tf.task_id = ? AND tf.is_deleted = 0
+       ORDER BY tf.created_at DESC`,
+      [task.id]
+    );
+    task.files = files;
+
     res.json({
       success: true,
       data: task
@@ -452,11 +474,200 @@ const deleteTask = async (req, res) => {
   }
 };
 
+/**
+ * Add comment to task
+ * POST /api/v1/tasks/:id/comments
+ */
+const addComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment, file_path } = req.body;
+
+    // Check if task exists
+    const [tasks] = await pool.execute(
+      `SELECT id FROM tasks WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (tasks.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Task not found'
+      });
+    }
+
+    if (!comment) {
+      return res.status(400).json({
+        success: false,
+        error: 'Comment is required'
+      });
+    }
+
+    // Insert comment
+    const [result] = await pool.execute(
+      `INSERT INTO task_comments (task_id, user_id, comment, file_path)
+       VALUES (?, ?, ?, ?)`,
+      [id, req.userId, comment, file_path || null]
+    );
+
+    // Get created comment
+    const [comments] = await pool.execute(
+      `SELECT tc.*, u.name as user_name, u.email as user_email
+       FROM task_comments tc
+       JOIN users u ON tc.user_id = u.id
+       WHERE tc.id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: comments[0],
+      message: 'Comment added successfully'
+    });
+  } catch (error) {
+    console.error('Add task comment error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add comment'
+    });
+  }
+};
+
+/**
+ * Get task comments
+ * GET /api/v1/tasks/:id/comments
+ */
+const getComments = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [comments] = await pool.execute(
+      `SELECT tc.*, u.name as user_name, u.email as user_email, u.avatar
+       FROM task_comments tc
+       JOIN users u ON tc.user_id = u.id
+       WHERE tc.task_id = ? AND tc.is_deleted = 0
+       ORDER BY tc.created_at ASC`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: comments
+    });
+  } catch (error) {
+    console.error('Get task comments error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch comments'
+    });
+  }
+};
+
+/**
+ * Upload file to task
+ * POST /api/v1/tasks/:id/files
+ */
+const uploadFile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = req.file;
+    const { description } = req.body;
+
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        error: 'File is required'
+      });
+    }
+
+    // Check if task exists
+    const [tasks] = await pool.execute(
+      `SELECT id FROM tasks WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, req.companyId]
+    );
+
+    if (tasks.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Task not found'
+      });
+    }
+
+    const path = require('path');
+    const filePath = file.path;
+    const fileName = file.originalname;
+    const fileSize = file.size;
+    const fileType = path.extname(fileName).toLowerCase();
+
+    // Insert file
+    const [result] = await pool.execute(
+      `INSERT INTO task_files (task_id, user_id, file_path, file_name, file_size, file_type, description)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.userId, filePath, fileName, fileSize, fileType, description || null]
+    );
+
+    // Get created file
+    const [files] = await pool.execute(
+      `SELECT tf.*, u.name as user_name
+       FROM task_files tf
+       JOIN users u ON tf.user_id = u.id
+       WHERE tf.id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: files[0],
+      message: 'File uploaded successfully'
+    });
+  } catch (error) {
+    console.error('Upload task file error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload file'
+    });
+  }
+};
+
+/**
+ * Get task files
+ * GET /api/v1/tasks/:id/files
+ */
+const getFiles = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [files] = await pool.execute(
+      `SELECT tf.*, u.name as user_name
+       FROM task_files tf
+       JOIN users u ON tf.user_id = u.id
+       WHERE tf.task_id = ? AND tf.is_deleted = 0
+       ORDER BY tf.created_at DESC`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: files
+    });
+  } catch (error) {
+    console.error('Get task files error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch files'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
   create,
   update,
-  delete: deleteTask
+  delete: deleteTask,
+  addComment,
+  getComments,
+  uploadFile,
+  getFiles
 };
 

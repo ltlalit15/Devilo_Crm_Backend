@@ -11,6 +11,8 @@ const { optionalAuth, requireRole } = require('../middleware/auth');
 router.get('/admin', optionalAuth, dashboardController.getAdminDashboard);
 router.get('/employee', optionalAuth, dashboardController.getEmployeeDashboard);
 router.get('/client', optionalAuth, dashboardController.getClientDashboard);
+router.get('/client/work', optionalAuth, dashboardController.getClientWork);
+router.get('/client/finance', optionalAuth, dashboardController.getClientFinance);
 
 module.exports = router;
 

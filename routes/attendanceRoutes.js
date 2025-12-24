@@ -5,6 +5,8 @@ const { optionalAuth } = require('../middleware/auth');
 
 // GET routes don't require token - faster API calls
 router.get('/', optionalAuth, attendanceController.getAll);
+router.get('/calendar', optionalAuth, attendanceController.getMonthlyCalendar);
+router.get('/percentage', optionalAuth, attendanceController.getAttendancePercentage);
 router.post('/check-in', optionalAuth, attendanceController.checkIn);
 router.post('/check-out', optionalAuth, attendanceController.checkOut);
 
