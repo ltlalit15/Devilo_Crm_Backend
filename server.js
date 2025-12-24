@@ -49,6 +49,9 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS
+app.set('trust proxy', 1);
+
+
 app.use(cors({
   origin: [
     'http://localhost:5173',
