@@ -13,6 +13,7 @@ router.get('/:id', optionalAuth, clientController.getById);
 router.post('/', optionalAuth, requireRole(['ADMIN']), clientController.create);
 router.put('/:id', optionalAuth, requireRole(['ADMIN']), clientController.update);
 router.delete('/:id', optionalAuth, requireRole(['ADMIN']), clientController.delete);
+router.get('/overview', optionalAuth, clientController.getOverview);
 router.post('/:id/contacts', optionalAuth, requireRole(['ADMIN']), clientController.addContact);
 router.get('/:id/contacts', optionalAuth, clientController.getContacts);
 router.put('/:id/contacts/:contactId', optionalAuth, requireRole(['ADMIN']), clientController.updateContact);

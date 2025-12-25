@@ -105,56 +105,149 @@ const getAll = async (req, res) => {
     // Get filters from query params
     const filterCompanyId = req.query.company_id || req.companyId;
     const status = req.query.status;
+    const search = req.query.search;
+    const client_id = req.query.client_id;
+    const project_id = req.query.project_id;
+    const start_date = req.query.start_date;
+    const end_date = req.query.end_date;
+    const amount_min = req.query.amount_min;
+    const amount_max = req.query.amount_max;
+    const created_by = req.query.created_by;
+    const sort_by = req.query.sort_by || 'created_at';
+    const sort_order = req.query.sort_order || 'DESC';
     
-    // Filter proposals by PROP# prefix OR by status (Sent, Draft) if no prefix
-    // This allows flexibility - proposals can be identified by prefix or status
-    let whereClause = 'WHERE e.is_deleted = 0 AND e.estimate_number LIKE \'PROP#%\'';
+    // Filter proposals - include all estimates that are proposals
+    let whereClause = `WHERE e.is_deleted = 0 AND (
+      e.estimate_number LIKE 'PROP#%' 
+      OR e.estimate_number LIKE 'PROPOSAL%'
+      OR e.estimate_number LIKE 'PROP-%'
+    )`;
     const params = [];
     
     if (filterCompanyId) {
+      const companyId = parseInt(filterCompanyId);
       whereClause += ' AND e.company_id = ?';
-      params.push(filterCompanyId);
+      params.push(companyId);
     }
     
-    if (status && status !== 'All') {
-      // Handle both lowercase and uppercase status
+    if (status && status !== 'All' && status !== 'all') {
       const statusUpper = status.toUpperCase();
-      if (statusUpper === 'SENT') {
-        whereClause += ' AND UPPER(e.status) = \'SENT\'';
-      } else if (statusUpper === 'DRAFT') {
-        whereClause += ' AND UPPER(e.status) = \'DRAFT\'';
-      } else {
-        whereClause += ' AND UPPER(e.status) = ?';
-        params.push(statusUpper);
-      }
+      whereClause += ' AND UPPER(e.status) = ?';
+      params.push(statusUpper);
     }
+    
+    if (client_id) {
+      whereClause += ' AND e.client_id = ?';
+      params.push(client_id);
+    }
+    
+    if (project_id) {
+      whereClause += ' AND e.project_id = ?';
+      params.push(project_id);
+    }
+    
+    if (start_date) {
+      whereClause += ' AND DATE(e.created_at) >= ?';
+      params.push(start_date);
+    }
+    
+    if (end_date) {
+      whereClause += ' AND DATE(e.created_at) <= ?';
+      params.push(end_date);
+    }
+    
+    if (amount_min !== undefined) {
+      whereClause += ' AND e.total >= ?';
+      params.push(parseFloat(amount_min));
+    }
+    
+    if (amount_max !== undefined) {
+      whereClause += ' AND e.total <= ?';
+      params.push(parseFloat(amount_max));
+    }
+    
+    if (created_by) {
+      whereClause += ' AND e.created_by = ?';
+      params.push(created_by);
+    }
+    
+    // Search filter
+    if (search) {
+      whereClause += ` AND (
+        e.estimate_number LIKE ? OR 
+        c.company_name LIKE ? OR
+        e.description LIKE ?
+      )`;
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern);
+    }
+    
+    // Validate and set sort column
+    const allowedSortColumns = {
+      'id': 'e.id',
+      'estimate_number': 'e.estimate_number',
+      'status': 'e.status',
+      'created_at': 'e.created_at',
+      'valid_till': 'e.valid_till',
+      'total': 'e.total',
+      'client_name': 'c.company_name',
+      'company_name': 'comp.name'
+    };
+    
+    const sortColumn = allowedSortColumns[sort_by] || 'e.created_at';
+    const sortDirection = (sort_order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     
     // Get total count for pagination
     const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM estimates e ${whereClause}`,
+      `SELECT COUNT(*) as total FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       ${whereClause}`,
       params
     );
     const total = countResult[0].total;
 
     // Get paginated proposals - LIMIT and OFFSET as template literals (not placeholders)
     const [proposals] = await pool.execute(
-      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
+      `SELECT e.*, 
+       c.company_name as client_name, 
+       c.id as client_id,
+       c.email as client_email,
+       p.project_name, 
+       p.id as project_id,
+       comp.name as company_name,
+       comp.id as company_id,
+       u.name as created_by_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
        LEFT JOIN projects p ON e.project_id = p.id
        LEFT JOIN companies comp ON e.company_id = comp.id
+       LEFT JOIN users u ON e.created_by = u.id
        ${whereClause}
-       ORDER BY e.created_at DESC
+       ORDER BY ${sortColumn} ${sortDirection}
        LIMIT ${limit} OFFSET ${offset}`,
       params
     );
 
+    // Get items for each proposal
     for (let proposal of proposals) {
       const [items] = await pool.execute(
         `SELECT * FROM estimate_items WHERE estimate_id = ?`,
         [proposal.id]
       );
-      proposal.items = items;
+      proposal.items = items || [];
+      
+      // Format estimate_number to match frontend expectations
+      if (!proposal.estimate_number || !proposal.estimate_number.includes('PROPOSAL')) {
+        const numMatch = proposal.estimate_number?.match(/PROP#?(\d+)/);
+        const proposalNum = numMatch ? numMatch[1] : proposal.id;
+        proposal.estimate_number = `PROPOSAL #${proposalNum}`;
+      }
+      
+      // Ensure status is lowercase for frontend
+      if (proposal.status) {
+        proposal.status = proposal.status.toLowerCase();
+      }
     }
 
     res.json({ 
@@ -164,7 +257,10 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get proposals error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch proposals' });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to fetch proposals'
+    });
   }
 };
 
@@ -563,12 +659,335 @@ const convertToInvoice = async (req, res) => {
   }
 };
 
+/**
+ * Send proposal by email
+ * POST /api/v1/proposals/:id/send-email
+ */
+const sendEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { to, subject, message } = req.body;
+
+    // Get proposal
+    const [proposals] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name, c.email as client_email, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.status IN ('Sent', 'Draft'))`,
+      [id]
+    );
+
+    if (proposals.length === 0) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    const proposal = proposals[0];
+
+    // Generate public URL (you'll need to implement this)
+    const publicUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/public/proposals/${id}`;
+
+    // Generate email HTML
+    const { sendEmail: sendEmailUtil, generateProposalEmailHTML } = require('../utils/emailService');
+    const emailHTML = generateProposalEmailHTML(proposal, publicUrl);
+
+    // Send email
+    const recipientEmail = to || proposal.client_email;
+    if (!recipientEmail) {
+      return res.status(400).json({ success: false, error: 'Recipient email is required' });
+    }
+
+    await sendEmailUtil({
+      to: recipientEmail,
+      subject: subject || `Proposal ${proposal.estimate_number}`,
+      html: emailHTML,
+      text: `Please view the proposal at: ${publicUrl}`
+    });
+
+    // Update proposal status to 'Sent'
+    await pool.execute(
+      `UPDATE estimates SET status = 'Sent', sent_at = NOW() WHERE id = ?`,
+      [id]
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'Proposal sent successfully',
+      data: { email: recipientEmail }
+    });
+  } catch (error) {
+    console.error('Send proposal email error:', error);
+    res.status(500).json({ success: false, error: 'Failed to send proposal email' });
+  }
+};
+
+/**
+ * Get filter options for proposals
+ * GET /api/v1/proposals/filters
+ */
+const getFilters = async (req, res) => {
+  try {
+    const companyId = req.query.company_id || req.companyId;
+    
+    let whereClause = `WHERE e.is_deleted = 0 AND (
+      e.estimate_number LIKE 'PROP#%' 
+      OR e.estimate_number LIKE 'PROPOSAL%'
+      OR e.estimate_number LIKE 'PROP-%'
+    )`;
+    const params = [];
+    
+    if (companyId) {
+      whereClause += ' AND e.company_id = ?';
+      params.push(companyId);
+    }
+
+    // Get unique statuses
+    const [statuses] = await pool.execute(
+      `SELECT DISTINCT e.status FROM estimates e ${whereClause} ORDER BY e.status`,
+      params
+    );
+
+    // Get clients
+    const [clients] = await pool.execute(
+      `SELECT DISTINCT c.id, c.company_name 
+       FROM clients c
+       INNER JOIN estimates e ON c.id = e.client_id
+       ${whereClause}
+       ORDER BY c.company_name`,
+      params
+    );
+
+    // Get projects
+    const [projects] = await pool.execute(
+      `SELECT DISTINCT p.id, p.project_name 
+       FROM projects p
+       INNER JOIN estimates e ON p.id = e.project_id
+       ${whereClause}
+       ORDER BY p.project_name`,
+      params
+    );
+
+    // Get created by users
+    const [users] = await pool.execute(
+      `SELECT DISTINCT u.id, u.name, u.email
+       FROM users u
+       INNER JOIN estimates e ON u.id = e.created_by
+       ${whereClause}
+       ORDER BY u.name`,
+      params
+    );
+
+    res.json({
+      success: true,
+      data: {
+        statuses: statuses.map(s => s.status),
+        clients: clients,
+        projects: projects,
+        created_by_users: users
+      }
+    });
+  } catch (error) {
+    console.error('Get filters error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch filter options'
+    });
+  }
+};
+
+/**
+ * Update proposal status
+ * PUT /api/v1/proposals/:id/status
+ */
+const updateStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        error: 'Status is required'
+      });
+    }
+
+    // Check if proposal exists
+    const [existing] = await pool.execute(
+      `SELECT id FROM estimates WHERE id = ? AND is_deleted = 0 AND (estimate_number LIKE 'PROP#%' OR status IN ('Sent', 'Draft'))`,
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    // Map status
+    let mappedStatus = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+
+    // Update status
+    await pool.execute(
+      `UPDATE estimates SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [mappedStatus, id]
+    );
+
+    // Get updated proposal
+    const [proposals] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ?`,
+      [id]
+    );
+
+    const proposal = proposals[0];
+    const [itemsData] = await pool.execute(
+      `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+      [id]
+    );
+    proposal.items = itemsData;
+
+    res.json({ 
+      success: true, 
+      data: proposal,
+      message: 'Proposal status updated successfully'
+    });
+  } catch (error) {
+    console.error('Update proposal status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to update proposal status' 
+    });
+  }
+};
+
+/**
+ * Duplicate proposal
+ * POST /api/v1/proposals/:id/duplicate
+ */
+const duplicate = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get original proposal
+    const [proposals] = await pool.execute(
+      `SELECT e.* FROM estimates e 
+       WHERE e.id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.status IN ('Sent', 'Draft'))`,
+      [id]
+    );
+
+    if (proposals.length === 0) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    const originalProposal = proposals[0];
+
+    // Get items
+    const [items] = await pool.execute(
+      `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+      [id]
+    );
+
+    // Generate new proposal number
+    const proposal_number = await generateProposalNumber(originalProposal.company_id);
+
+    // Create new proposal
+    const [result] = await pool.execute(
+      `INSERT INTO estimates (
+        company_id, estimate_number, valid_till, currency, client_id, project_id,
+        calculate_tax, description, note, terms, discount, discount_type,
+        sub_total, discount_amount, tax_amount, total, status, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        originalProposal.company_id,
+        proposal_number,
+        originalProposal.valid_till,
+        originalProposal.currency || 'USD',
+        originalProposal.client_id,
+        originalProposal.project_id,
+        originalProposal.calculate_tax || 'After Discount',
+        originalProposal.description,
+        originalProposal.note,
+        originalProposal.terms || 'Thank you for your business.',
+        originalProposal.discount ?? 0,
+        originalProposal.discount_type || '%',
+        originalProposal.sub_total,
+        originalProposal.discount_amount,
+        originalProposal.tax_amount,
+        originalProposal.total,
+        'Draft',
+        req.user?.id || 1
+      ]
+    );
+
+    const newProposalId = result.insertId;
+
+    // Copy items
+    if (items && items.length > 0) {
+      const itemValues = items.map(item => [
+        newProposalId,
+        item.item_name || '',
+        item.description || null,
+        item.quantity || 1,
+        item.unit || 'Pcs',
+        item.unit_price || 0,
+        item.tax || null,
+        item.tax_rate || 0,
+        item.file_path || null,
+        item.amount || 0
+      ]);
+
+      await pool.query(
+        `INSERT INTO estimate_items (
+          estimate_id, item_name, description, quantity, unit, unit_price, tax, tax_rate, file_path, amount
+        ) VALUES ?`,
+        [itemValues]
+      );
+    }
+
+    // Fetch created proposal
+    const [newProposals] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ?`,
+      [newProposalId]
+    );
+
+    const newProposal = newProposals[0];
+    const [newItemsData] = await pool.execute(
+      `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+      [newProposalId]
+    );
+    newProposal.items = newItemsData;
+
+    res.status(201).json({ 
+      success: true, 
+      data: newProposal,
+      message: 'Proposal duplicated successfully'
+    });
+  } catch (error) {
+    console.error('Duplicate proposal error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to duplicate proposal' 
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
   create,
   update,
   delete: deleteProposal,
-  convertToInvoice
+  convertToInvoice,
+  sendEmail,
+  getFilters,
+  updateStatus,
+  duplicate
 };
 

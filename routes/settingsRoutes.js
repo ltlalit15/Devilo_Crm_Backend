@@ -58,11 +58,17 @@ const optionalUpload = (req, res, next) => {
 
 // GET routes don't require token - faster API calls
 router.get('/', optionalAuth, settingsController.get);
+router.get('/category/:category', optionalAuth, settingsController.getByCategory);
 router.put('/', 
   optionalAuth, 
   requireRole(['ADMIN']), 
   optionalUpload,
   settingsController.update
+);
+router.put('/bulk', 
+  optionalAuth, 
+  requireRole(['ADMIN']), 
+  settingsController.bulkUpdate
 );
 
 module.exports = router;

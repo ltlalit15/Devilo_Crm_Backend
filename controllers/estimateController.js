@@ -70,6 +70,11 @@ const getAll = async (req, res) => {
     
     // Only filter by company_id if explicitly provided in query params or req.companyId exists
     const filterCompanyId = req.query.company_id || req.companyId;
+    const status = req.query.status;
+    const search = req.query.search || req.query.query;
+    const clientId = req.query.client_id;
+    const startDate = req.query.start_date;
+    const endDate = req.query.end_date;
     
     let whereClause = 'WHERE e.is_deleted = 0';
     const params = [];
@@ -79,10 +84,33 @@ const getAll = async (req, res) => {
       params.push(filterCompanyId);
     }
     
-    // Optional status filter
-    if (req.query.status && req.query.status !== 'All') {
+    // Status filter
+    if (status && status !== 'All' && status !== 'all') {
       whereClause += ' AND UPPER(e.status) = UPPER(?)';
-      params.push(req.query.status);
+      params.push(status);
+    }
+    
+    // Search filter (estimate number or client name)
+    if (search) {
+      whereClause += ' AND (e.estimate_number LIKE ? OR c.company_name LIKE ?)';
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern);
+    }
+    
+    // Client filter
+    if (clientId) {
+      whereClause += ' AND e.client_id = ?';
+      params.push(clientId);
+    }
+    
+    // Date range filter
+    if (startDate) {
+      whereClause += ' AND DATE(e.created_at) >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereClause += ' AND DATE(e.created_at) <= ?';
+      params.push(endDate);
     }
     
     // Get total count for pagination
@@ -98,6 +126,9 @@ const getAll = async (req, res) => {
         e.id,
         e.company_id,
         e.estimate_number,
+        e.created_at,
+        e.estimate_date,
+        e.created_by,
         e.valid_till,
         e.currency,
         e.client_id,
@@ -120,11 +151,13 @@ const getAll = async (req, res) => {
         e.is_deleted,
         c.company_name as client_name,
         p.project_name,
-        comp.name as company_name
+        comp.name as company_name,
+        u.name as created_by_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
        LEFT JOIN projects p ON e.project_id = p.id
        LEFT JOIN companies comp ON e.company_id = comp.id
+       LEFT JOIN users u ON e.created_by = u.id
        ${whereClause}
        ORDER BY e.created_at DESC
        LIMIT ${limit} OFFSET ${offset}`,
@@ -737,12 +770,75 @@ const convertToInvoice = async (req, res) => {
   }
 };
 
-module.exports = { 
-  getAll, 
-  getById, 
-  create, 
-  update, 
+/**
+ * Send estimate by email
+ * POST /api/v1/estimates/:id/send-email
+ */
+const sendEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { to, subject, message } = req.body;
+
+    // Get estimate
+    const [estimates] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name, c.email as client_email, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ? AND e.is_deleted = 0`,
+      [id]
+    );
+
+    if (estimates.length === 0) {
+      return res.status(404).json({ success: false, error: 'Estimate not found' });
+    }
+
+    const estimate = estimates[0];
+
+    // Generate public URL
+    const publicUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/public/estimates/${id}`;
+
+    // Generate email HTML
+    const { sendEmail: sendEmailUtil, generateEstimateEmailHTML } = require('../utils/emailService');
+    const emailHTML = generateEstimateEmailHTML(estimate, publicUrl);
+
+    // Send email
+    const recipientEmail = to || estimate.client_email;
+    if (!recipientEmail) {
+      return res.status(400).json({ success: false, error: 'Recipient email is required' });
+    }
+
+    await sendEmailUtil({
+      to: recipientEmail,
+      subject: subject || `Estimate ${estimate.estimate_number}`,
+      html: emailHTML,
+      text: `Please view the estimate at: ${publicUrl}`
+    });
+
+    // Update estimate status to 'Sent'
+    await pool.execute(
+      `UPDATE estimates SET status = 'Sent', sent_at = NOW() WHERE id = ?`,
+      [id]
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'Estimate sent successfully',
+      data: { email: recipientEmail }
+    });
+  } catch (error) {
+    console.error('Send estimate email error:', error);
+    res.status(500).json({ success: false, error: 'Failed to send estimate email' });
+  }
+};
+
+module.exports = {
+  getAll,
+  getById,
+  create,
+  update,
   delete: deleteEstimate,
-  convertToInvoice
+  convertToInvoice,
+  sendEmail
 };
 

@@ -41,6 +41,11 @@ const reportRoutes = require('./routes/reportRoutes');
 const emailTemplateRoutes = require('./routes/emailTemplateRoutes');
 const financeTemplateRoutes = require('./routes/financeTemplateRoutes');
 const creditNoteRoutes = require('./routes/creditNoteRoutes');
+const superAdminRoutes = require('./routes/superAdminRoutes');
+const bankAccountRoutes = require('./routes/bankAccountRoutes');
+const auditLogRoutes = require('./routes/auditLogRoutes');
+const leaveRequestRoutes = require('./routes/leaveRequestRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -128,6 +133,11 @@ app.use(`${apiBase}/reports`, reportRoutes);
 app.use(`${apiBase}/email-templates`, emailTemplateRoutes);
 app.use(`${apiBase}/finance-templates`, financeTemplateRoutes);
 app.use(`${apiBase}/credit-notes`, creditNoteRoutes);
+app.use(`${apiBase}/superadmin`, superAdminRoutes);
+app.use(`${apiBase}/bank-accounts`, bankAccountRoutes);
+app.use(`${apiBase}/audit-logs`, auditLogRoutes);
+app.use(`${apiBase}/leave-requests`, leaveRequestRoutes);
+app.use(`${apiBase}/notifications`, notificationRoutes);
 
 // 404 handler
 app.use((req, res) => {

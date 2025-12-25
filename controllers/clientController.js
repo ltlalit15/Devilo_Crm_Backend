@@ -636,6 +636,219 @@ const deleteContact = async (req, res) => {
   }
 };
 
+/**
+ * Get clients overview statistics
+ * GET /api/v1/clients/overview
+ */
+const getOverview = async (req, res) => {
+  try {
+    const { date_range = 'all', start_date, end_date, status, owner_id } = req.query;
+    const companyId = req.companyId;
+
+    // Calculate date range
+    let dateFilter = '';
+    const dateParams = [];
+    
+    if (date_range === 'today') {
+      dateFilter = 'AND DATE(c.created_at) = CURDATE()';
+    } else if (date_range === 'this_week') {
+      dateFilter = 'AND YEARWEEK(c.created_at, 1) = YEARWEEK(CURDATE(), 1)';
+    } else if (date_range === 'this_month') {
+      dateFilter = 'AND YEAR(c.created_at) = YEAR(CURDATE()) AND MONTH(c.created_at) = MONTH(CURDATE())';
+    } else if (date_range === 'custom' && start_date && end_date) {
+      dateFilter = 'AND DATE(c.created_at) BETWEEN ? AND ?';
+      dateParams.push(start_date, end_date);
+    }
+
+    let statusFilter = '';
+    if (status) {
+      statusFilter = `AND c.status = '${status}'`;
+    }
+
+    let ownerFilter = '';
+    if (owner_id) {
+      ownerFilter = `AND c.owner_id = ${owner_id}`;
+    }
+
+    // Total Clients
+    const [totalClientsResult] = await pool.execute(
+      `SELECT COUNT(*) as count FROM clients c 
+       WHERE c.company_id = ? AND c.is_deleted = 0 ${dateFilter} ${statusFilter} ${ownerFilter}`,
+      [companyId, ...dateParams]
+    );
+    const totalClients = totalClientsResult[0].count;
+
+    // Active Clients
+    const [activeClientsResult] = await pool.execute(
+      `SELECT COUNT(*) as count FROM clients c 
+       WHERE c.company_id = ? AND c.is_deleted = 0 AND c.status = 'Active' ${dateFilter} ${ownerFilter}`,
+      [companyId, ...dateParams]
+    );
+    const activeClients = activeClientsResult[0].count;
+
+    // Inactive Clients
+    const [inactiveClientsResult] = await pool.execute(
+      `SELECT COUNT(*) as count FROM clients c 
+       WHERE c.company_id = ? AND c.is_deleted = 0 AND c.status = 'Inactive' ${dateFilter} ${ownerFilter}`,
+      [companyId, ...dateParams]
+    );
+    const inactiveClients = inactiveClientsResult[0].count;
+
+    // Total Revenue (from invoices)
+    const [revenueResult] = await pool.execute(
+      `SELECT 
+        COALESCE(SUM(i.total), 0) as total_revenue,
+        COALESCE(SUM(i.paid), 0) as payment_received,
+        COALESCE(SUM(i.unpaid), 0) as outstanding_amount
+       FROM invoices i
+       INNER JOIN clients c ON i.client_id = c.id
+       WHERE c.company_id = ? AND c.is_deleted = 0 AND i.is_deleted = 0 ${dateFilter.replace('c.created_at', 'i.created_at')} ${statusFilter} ${ownerFilter}`,
+      [companyId, ...dateParams]
+    );
+    const revenue = revenueResult[0] || { total_revenue: 0, payment_received: 0, outstanding_amount: 0 };
+
+    // Recent Clients (last 10)
+    const [recentClientsResult] = await pool.execute(
+      `SELECT 
+        c.id,
+        c.company_name,
+        c.status,
+        c.created_at,
+        u.name as owner_name,
+        (SELECT COUNT(*) FROM invoices inv WHERE inv.client_id = c.id AND inv.is_deleted = 0) as total_invoices,
+        (SELECT COALESCE(SUM(inv.total), 0) FROM invoices inv WHERE inv.client_id = c.id AND inv.is_deleted = 0) as total_invoiced
+       FROM clients c
+       LEFT JOIN users u ON c.owner_id = u.id
+       WHERE c.company_id = ? AND c.is_deleted = 0 ${dateFilter} ${statusFilter} ${ownerFilter}
+       ORDER BY c.created_at DESC
+       LIMIT 10`,
+      [companyId, ...dateParams]
+    );
+
+    // Client Growth (last 6 months)
+    const [growthResult] = await pool.execute(
+      `SELECT 
+        DATE_FORMAT(created_at, '%Y-%m') as month,
+        COUNT(*) as count
+       FROM clients
+       WHERE company_id = ? AND is_deleted = 0
+       AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+       GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+       ORDER BY month ASC`,
+      [companyId]
+    );
+
+    // Revenue by Client (top 10)
+    const [revenueByClientResult] = await pool.execute(
+      `SELECT 
+        c.id,
+        c.company_name,
+        COALESCE(SUM(i.total), 0) as total_revenue,
+        COALESCE(SUM(i.paid), 0) as payment_received,
+        COALESCE(SUM(i.unpaid), 0) as outstanding
+       FROM clients c
+       LEFT JOIN invoices i ON i.client_id = c.id AND i.is_deleted = 0
+       WHERE c.company_id = ? AND c.is_deleted = 0 ${statusFilter} ${ownerFilter}
+       GROUP BY c.id, c.company_name
+       ORDER BY total_revenue DESC
+       LIMIT 10`,
+      [companyId]
+    );
+
+    // Assigned Users
+    const [assignedUsersResult] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.name,
+        u.email,
+        COUNT(c.id) as clients_count
+       FROM users u
+       LEFT JOIN clients c ON c.owner_id = u.id AND c.company_id = ? AND c.is_deleted = 0 ${dateFilter.replace('c.created_at', 'c.created_at')} ${statusFilter}
+       WHERE u.company_id = ? AND u.is_deleted = 0
+       GROUP BY u.id, u.name, u.email
+       HAVING clients_count > 0
+       ORDER BY clients_count DESC
+       LIMIT 10`,
+      [companyId, ...dateParams, companyId]
+    );
+
+    // Recent Activity (from invoices, payments, client updates)
+    const [recentActivityResult] = await pool.execute(
+      `(SELECT 
+        'client_created' as activity_type,
+        c.company_name as title,
+        c.created_at as activity_date,
+        c.id as related_id,
+        'client' as related_type,
+        u.name as user_name
+       FROM clients c
+       LEFT JOIN users u ON c.owner_id = u.id
+       WHERE c.company_id = ? AND c.is_deleted = 0
+       ORDER BY c.created_at DESC
+       LIMIT 5)
+       UNION ALL
+       (SELECT 
+        'invoice_created' as activity_type,
+        CONCAT('Invoice #', i.invoice_number, ' for ', c.company_name) as title,
+        i.created_at as activity_date,
+        i.id as related_id,
+        'invoice' as related_type,
+        u.name as user_name
+       FROM invoices i
+       INNER JOIN clients c ON i.client_id = c.id
+       LEFT JOIN users u ON i.created_by = u.id
+       WHERE c.company_id = ? AND i.is_deleted = 0
+       ORDER BY i.created_at DESC
+       LIMIT 5)
+       UNION ALL
+       (SELECT 
+        'payment_received' as activity_type,
+        CONCAT('Payment received for Invoice #', i.invoice_number) as title,
+        p.payment_date as activity_date,
+        p.id as related_id,
+        'payment' as related_type,
+        u.name as user_name
+       FROM payments p
+       INNER JOIN invoices i ON p.invoice_id = i.id
+       INNER JOIN clients c ON i.client_id = c.id
+       LEFT JOIN users u ON p.created_by = u.id
+       WHERE c.company_id = ? AND p.is_deleted = 0
+       ORDER BY p.payment_date DESC
+       LIMIT 5)
+       ORDER BY activity_date DESC
+       LIMIT 15`,
+      [companyId, companyId, companyId]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        totals: {
+          total_clients: totalClients,
+          active_clients: activeClients,
+          inactive_clients: inactiveClients,
+        },
+        revenue: {
+          total_revenue: parseFloat(revenue.total_revenue) || 0,
+          payment_received: parseFloat(revenue.payment_received) || 0,
+          outstanding_amount: parseFloat(revenue.outstanding_amount) || 0,
+        },
+        recent_clients: recentClientsResult,
+        client_growth: growthResult,
+        revenue_by_client: revenueByClientResult,
+        assigned_users: assignedUsersResult,
+        recent_activity: recentActivityResult,
+      },
+    });
+  } catch (error) {
+    console.error('Get clients overview error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch clients overview',
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -645,6 +858,7 @@ module.exports = {
   addContact,
   getContacts,
   updateContact,
-  deleteContact
+  deleteContact,
+  getOverview,
 };
 
