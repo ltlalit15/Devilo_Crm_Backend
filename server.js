@@ -67,6 +67,7 @@ app.use(cors({
     process.env.FRONTEND_URL,       // future env based
     'http://localhost:5173',
     'https://crm-update.netlify.app'
+  
   ].filter(Boolean),
   credentials: true
 }));
