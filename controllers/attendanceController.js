@@ -1,15 +1,12 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { user_id, month, year } = req.query;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
+    const companyId = req.query.company_id || req.body.company_id || 1;
     let whereClause = 'WHERE a.company_id = ? AND u.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
     
     // Filter by user_id if provided (for employee dashboard)
     if (user_id) {
@@ -31,17 +28,8 @@ const getAll = async (req, res) => {
       whereClause += ' AND a.date >= ? AND a.date <= ?';
       params.push(startDate, endDate);
     }
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM attendance a
-       JOIN users u ON a.user_id = u.id
-       ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated attendance - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all attendance without pagination
     const [attendance] = await pool.execute(
       `SELECT 
         a.id,
@@ -60,14 +48,12 @@ const getAll = async (req, res) => {
       FROM attendance a
       JOIN users u ON a.user_id = u.id
       ${whereClause}
-      ORDER BY a.date DESC, u.name ASC
-      LIMIT ${limit} OFFSET ${offset}`,
+      ORDER BY a.date DESC, u.name ASC`,
       params
     );
     res.json({ 
       success: true, 
-      data: attendance,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: attendance
     });
   } catch (error) {
     console.error('Get attendance error:', error);

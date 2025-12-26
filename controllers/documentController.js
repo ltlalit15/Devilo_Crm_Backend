@@ -1,7 +1,6 @@
 const pool = require('../config/db');
 const path = require('path');
 const fs = require('fs');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all documents for current user
@@ -11,19 +10,16 @@ const getAll = async (req, res) => {
   try {
     const { category } = req.query;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    const userId = req.query.user_id || req.body.user_id || null;
 
     let whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
-    // For employees, only show their own documents
-    if (req.user.role === 'EMPLOYEE') {
+    // For employees/clients, only show their own documents
+    if (userId) {
       whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
-    } else if (req.user.role === 'CLIENT') {
-      whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
+      params.push(userId);
     }
     // Admin can see all company documents
 
@@ -32,21 +28,13 @@ const getAll = async (req, res) => {
       params.push(category);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM documents d ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated documents - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all documents without pagination
     const [documents] = await pool.execute(
       `SELECT d.*, u.name as user_name
        FROM documents d
        LEFT JOIN users u ON d.user_id = u.id
        ${whereClause}
-       ORDER BY d.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY d.created_at DESC`,
       params
     );
 
@@ -59,8 +47,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: formattedDocuments,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: formattedDocuments
     });
   } catch (error) {
     console.error('Get documents error:', error);

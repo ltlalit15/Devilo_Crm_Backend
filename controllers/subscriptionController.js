@@ -1,43 +1,31 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { status } = req.query;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-
+    const companyId = req.query.company_id || req.body.company_id || 1;
     let whereClause = 'WHERE s.company_id = ? AND s.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
     if (status) {
       whereClause += ' AND s.status = ?';
       params.push(status);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM subscriptions s ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated subscriptions - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all subscriptions without pagination
     const [subscriptions] = await pool.execute(
       `SELECT s.*, c.company_name as client_name
        FROM subscriptions s
        LEFT JOIN clients c ON s.client_id = c.id
        ${whereClause}
-       ORDER BY s.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY s.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: subscriptions,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: subscriptions
     });
   } catch (error) {
     console.error('Get subscriptions error:', error);

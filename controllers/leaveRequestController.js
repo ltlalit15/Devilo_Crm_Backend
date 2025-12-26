@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all leave requests
@@ -11,8 +10,7 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const employee_id = req.query.employee_id || req.userId;
     const status = req.query.status;
     const leave_type = req.query.leave_type;
@@ -44,14 +42,7 @@ const getAll = async (req, res) => {
       params.push(leave_type);
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM leave_requests lr ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated leave requests
+    // Get all leave requests without pagination
     const [requests] = await pool.execute(
       `SELECT lr.*, 
               e.user_id,
@@ -63,15 +54,13 @@ const getAll = async (req, res) => {
        LEFT JOIN users u ON e.user_id = u.id
        LEFT JOIN departments d ON e.department_id = d.id
        ${whereClause}
-       ORDER BY lr.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY lr.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: requests,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: requests
     });
   } catch (error) {
     console.error('Get leave requests error:', error);

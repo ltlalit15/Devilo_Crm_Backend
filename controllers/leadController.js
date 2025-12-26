@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all leads
@@ -12,12 +11,10 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 const getAll = async (req, res) => {
   try {
     const { status, owner_id, source, city } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const companyId = req.companyId || req.query.company_id || 1;
 
     let whereClause = 'WHERE l.company_id = ? AND l.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
     if (status) {
       whereClause += ' AND l.status = ?';
@@ -36,21 +33,13 @@ const getAll = async (req, res) => {
       params.push(city);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM leads l ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated leads with owner info - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all leads without pagination
     const [leads] = await pool.execute(
       `SELECT l.*, u.name as owner_name, u.email as owner_email
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
        ${whereClause}
-       ORDER BY l.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY l.created_at DESC`,
       params
     );
 
@@ -65,8 +54,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: leads,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: leads
     });
   } catch (error) {
     console.error('Get leads error:', error);
@@ -85,12 +73,13 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.companyId || req.query.company_id || 1;
     const [leads] = await pool.execute(
       `SELECT l.*, u.name as owner_name, u.email as owner_email
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
        WHERE l.id = ? AND l.company_id = ? AND l.is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (leads.length === 0) {
@@ -144,6 +133,8 @@ const create = async (req, res) => {
     }
 
     // Insert lead - convert undefined to null for SQL
+    const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
+    const userId = req.userId || req.body.user_id || req.query.user_id || null;
     const [result] = await pool.execute(
       `INSERT INTO leads (
         company_id, lead_type, company_name, person_name, email, phone,
@@ -151,7 +142,7 @@ const create = async (req, res) => {
         value, due_followup, notes, probability, call_this_week, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         lead_type || 'Organization',
         company_name ?? null,
         person_name,
@@ -170,7 +161,7 @@ const create = async (req, res) => {
         notes ?? null,
         probability ?? null,
         call_this_week || 0,
-        req.userId ?? null
+        userId
       ]
     );
 
@@ -220,10 +211,11 @@ const update = async (req, res) => {
     const { id } = req.params;
     const updateFields = req.body;
 
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
     // Check if lead exists
     const [leads] = await pool.execute(
       `SELECT id FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (leads.length === 0) {
@@ -259,7 +251,7 @@ const update = async (req, res) => {
     }
 
     updates.push('updated_at = CURRENT_TIMESTAMP');
-    values.push(id, req.companyId);
+    values.push(id, companyId);
 
     await pool.execute(
       `UPDATE leads SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
@@ -306,10 +298,11 @@ const deleteLead = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.companyId || req.query.company_id || 1;
     const [result] = await pool.execute(
       `UPDATE leads SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (result.affectedRows === 0) {
@@ -340,10 +333,11 @@ const convertToClient = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
     // Get lead
     const [leads] = await pool.execute(
       `SELECT * FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (leads.length === 0) {
@@ -363,7 +357,7 @@ const convertToClient = async (req, res) => {
         currency, currency_symbol, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         lead.company_name || lead.person_name,
         lead.owner_id ?? null,
         lead.address ?? null,
@@ -426,7 +420,7 @@ const convertToClient = async (req, res) => {
 const getOverview = async (req, res) => {
   try {
     const { date_range = 'all', start_date, end_date } = req.query;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || 1;
 
     // Calculate date range
     let dateFilter = '';
@@ -598,8 +592,8 @@ const updateStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, change_reason } = req.body;
-    const companyId = req.companyId;
-    const userId = req.userId;
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
+    const userId = req.userId || req.query.user_id || req.body.user_id || null;
 
     if (!status) {
       return res.status(400).json({
@@ -663,7 +657,7 @@ const updateStatus = async (req, res) => {
 const bulkAction = async (req, res) => {
   try {
     const { lead_ids, action, data } = req.body;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
 
     if (!lead_ids || !Array.isArray(lead_ids) || lead_ids.length === 0) {
       return res.status(400).json({
@@ -745,8 +739,7 @@ const bulkAction = async (req, res) => {
  */
 const getAllContacts = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || 1;
     const { contact_type, status, search, lead_id } = req.query;
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
@@ -770,12 +763,7 @@ const getAllContacts = async (req, res) => {
       params.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM contacts c ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
+    // Get all contacts without pagination
     const [contacts] = await pool.execute(
       `SELECT 
         c.*,
@@ -787,15 +775,13 @@ const getAllContacts = async (req, res) => {
        LEFT JOIN users u ON c.assigned_user_id = u.id
        LEFT JOIN leads l ON c.lead_id = l.id
        ${whereClause}
-       ORDER BY c.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+       ORDER BY c.created_at DESC`,
+      params
     );
 
     res.json({
       success: true,
-      data: contacts,
-      pagination: getPaginationMeta(total, page, pageSize),
+      data: contacts
     });
   } catch (error) {
     console.error('Get all contacts error:', error);
@@ -813,7 +799,7 @@ const getAllContacts = async (req, res) => {
 const getContactById = async (req, res) => {
   try {
     const { id } = req.params;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || 1;
 
     const [contacts] = await pool.execute(
       `SELECT 
@@ -877,7 +863,7 @@ const createContact = async (req, res) => {
       status = 'Active',
       notes,
     } = req.body;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
 
     if (!name) {
       return res.status(400).json({
@@ -949,7 +935,7 @@ const updateContact = async (req, res) => {
   try {
     const { id } = req.params;
     const updateFields = req.body;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
 
     const [existing] = await pool.execute(
       `SELECT id FROM contacts WHERE id = ? AND company_id = ? AND is_deleted = 0`,
@@ -1026,7 +1012,7 @@ const updateContact = async (req, res) => {
 const deleteContact = async (req, res) => {
   try {
     const { id } = req.params;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || 1;
 
     const [result] = await pool.execute(
       `UPDATE contacts SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP

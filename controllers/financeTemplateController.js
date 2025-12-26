@@ -3,15 +3,11 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
     // Only filter by company_id if explicitly provided in query params or req.companyId exists
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const type = req.query.type;
     
     let whereClause = 'WHERE f.is_deleted = 0';
@@ -26,15 +22,8 @@ const getAll = async (req, res) => {
       whereClause += ' AND f.type = ?';
       params.push(type);
     }
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM finance_templates f ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated templates
+    // Get all templates without pagination
     const [templates] = await pool.execute(
       `SELECT 
         f.id,
@@ -48,8 +37,7 @@ const getAll = async (req, res) => {
        FROM finance_templates f
        LEFT JOIN companies comp ON f.company_id = comp.id
        ${whereClause}
-       ORDER BY f.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY f.created_at DESC`,
       params
     );
 
@@ -62,8 +50,7 @@ const getAll = async (req, res) => {
 
     res.json({ 
       success: true, 
-      data: parsedTemplates,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: parsedTemplates
     });
   } catch (error) {
     console.error('Get finance templates error:', error);

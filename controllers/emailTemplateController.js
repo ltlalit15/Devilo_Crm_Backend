@@ -3,15 +3,11 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
     // Only filter by company_id if explicitly provided in query params or req.companyId exists
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const category = req.query.category;
     
     let whereClause = 'WHERE e.is_deleted = 0';
@@ -26,15 +22,8 @@ const getAll = async (req, res) => {
       whereClause += ' AND e.type = ?';
       params.push(category);
     }
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM email_templates e ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated templates
+    // Get all templates without pagination
     const [templates] = await pool.execute(
       `SELECT 
         e.id,
@@ -49,8 +38,7 @@ const getAll = async (req, res) => {
        FROM email_templates e
        LEFT JOIN companies comp ON e.company_id = comp.id
        ${whereClause}
-       ORDER BY e.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY e.created_at DESC`,
       params
     );
 
@@ -72,8 +60,7 @@ const getAll = async (req, res) => {
 
     res.json({ 
       success: true, 
-      data: templatesWithTags,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: templatesWithTags
     });
   } catch (error) {
     console.error('Get email templates error:', error);

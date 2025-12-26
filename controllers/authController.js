@@ -141,6 +141,7 @@ const logout = async (req, res) => {
  */
 const getCurrentUser = async (req, res) => {
   try {
+    const userId = req.query.user_id || req.body.user_id || 1;
     const [users] = await pool.execute(
       `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address,
               u.emergency_contact_name, u.emergency_contact_phone, u.emergency_contact_relation,
@@ -153,7 +154,7 @@ const getCurrentUser = async (req, res) => {
        LEFT JOIN departments d ON e.department_id = d.id
        LEFT JOIN positions p ON e.position_id = p.id
        WHERE u.id = ? AND u.is_deleted = 0`,
-      [req.userId]
+      [userId]
     );
 
     if (users.length === 0) {
@@ -223,10 +224,12 @@ const updateCurrentUser = async (req, res) => {
       updateValues.push(name);
     }
     if (email !== undefined) {
+      const userId = req.query.user_id || req.body.user_id || 1;
+      const companyId = req.query.company_id || req.body.company_id || 1;
       // Check if email already exists for another user
       const [existingUsers] = await pool.execute(
         `SELECT id FROM users WHERE email = ? AND id != ? AND company_id = ?`,
-        [email, req.userId, req.companyId]
+        [email, userId, companyId]
       );
       if (existingUsers.length > 0) {
         return res.status(400).json({
@@ -281,7 +284,7 @@ const updateCurrentUser = async (req, res) => {
       });
     }
 
-    updateValues.push(req.userId);
+    updateValues.push(userId);
 
     await pool.execute(
       `UPDATE users SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -301,7 +304,7 @@ const updateCurrentUser = async (req, res) => {
        LEFT JOIN departments d ON e.department_id = d.id
        LEFT JOIN positions p ON e.position_id = p.id
        WHERE u.id = ? AND u.is_deleted = 0`,
-      [req.userId]
+      [userId]
     );
 
     const user = users[0];
@@ -349,7 +352,8 @@ const updateCurrentUser = async (req, res) => {
  */
 const changePassword = async (req, res) => {
   try {
-    const { current_password, new_password } = req.body;
+    const { current_password, new_password, user_id } = req.body;
+    const userId = user_id || req.query.user_id || 1;
 
     if (!current_password || !new_password) {
       return res.status(400).json({
@@ -368,7 +372,7 @@ const changePassword = async (req, res) => {
     // Get current user password
     const [users] = await pool.execute(
       `SELECT password FROM users WHERE id = ? AND is_deleted = 0`,
-      [req.userId]
+      [userId]
     );
 
     if (users.length === 0) {
@@ -393,7 +397,7 @@ const changePassword = async (req, res) => {
     // Update password
     await pool.execute(
       `UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [hashedPassword, req.userId]
+      [hashedPassword, userId]
     );
 
     res.json({

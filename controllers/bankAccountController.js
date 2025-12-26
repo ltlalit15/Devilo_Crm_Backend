@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all bank accounts
@@ -11,8 +10,7 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
 
     let whereClause = 'WHERE ba.is_deleted = 0';
     const params = [];
@@ -22,28 +20,19 @@ const getAll = async (req, res) => {
       params.push(filterCompanyId);
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM bank_accounts ba ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated bank accounts
+    // Get all bank accounts without pagination
     const [accounts] = await pool.execute(
       `SELECT ba.*, c.name as company_name
        FROM bank_accounts ba
        LEFT JOIN companies c ON ba.company_id = c.id
        ${whereClause}
-       ORDER BY ba.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ba.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: accounts,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: accounts
     });
   } catch (error) {
     console.error('Get bank accounts error:', error);

@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateProposalNumber = async (companyId) => {
   try {
@@ -99,9 +98,6 @@ const calculateTotals = (items, discount, discountType) => {
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
     // Get filters from query params
     const filterCompanyId = req.query.company_id || req.companyId;
     const status = req.query.status;
@@ -196,18 +192,8 @@ const getAll = async (req, res) => {
     
     const sortColumn = allowedSortColumns[sort_by] || 'e.created_at';
     const sortDirection = (sort_order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM estimates e
-       LEFT JOIN clients c ON e.client_id = c.id
-       LEFT JOIN companies comp ON e.company_id = comp.id
-       ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated proposals - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all proposals without pagination
     const [proposals] = await pool.execute(
       `SELECT e.*, 
        c.company_name as client_name, 
@@ -224,8 +210,7 @@ const getAll = async (req, res) => {
        LEFT JOIN companies comp ON e.company_id = comp.id
        LEFT JOIN users u ON e.created_by = u.id
        ${whereClause}
-       ORDER BY ${sortColumn} ${sortDirection}
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ${sortColumn} ${sortDirection}`,
       params
     );
 
@@ -252,8 +237,7 @@ const getAll = async (req, res) => {
 
     res.json({ 
       success: true, 
-      data: proposals,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: proposals
     });
   } catch (error) {
     console.error('Get proposals error:', error);

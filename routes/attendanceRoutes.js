@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const attendanceController = require('../controllers/attendanceController');
-const { optionalAuth } = require('../middleware/auth');
 
-// GET routes don't require token - faster API calls
-router.get('/', optionalAuth, attendanceController.getAll);
-router.get('/calendar', optionalAuth, attendanceController.getMonthlyCalendar);
-router.get('/percentage', optionalAuth, attendanceController.getAttendancePercentage);
-router.post('/check-in', optionalAuth, attendanceController.checkIn);
-router.post('/check-out', optionalAuth, attendanceController.checkOut);
+// No authentication required - all routes are public
+router.get('/', attendanceController.getAll);
+router.get('/calendar', attendanceController.getMonthlyCalendar);
+router.get('/percentage', attendanceController.getAttendancePercentage);
+router.post('/check-in', attendanceController.checkIn);
+router.post('/check-out', attendanceController.checkOut);
 
 module.exports = router;
 

@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all notifications
@@ -11,20 +10,19 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const userId = req.userId;
+    // No pagination - return all notifications
+    const userId = req.query.user_id || req.body.user_id || 1;
     const is_read = req.query.is_read;
     const type = req.query.type;
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    let whereClause = 'WHERE n.is_deleted = 0';
+    const params = [];
 
-    let whereClause = 'WHERE n.user_id = ? AND n.is_deleted = 0';
-    const params = [userId];
+    // Add user_id filter only if provided
+    if (userId) {
+      whereClause += ' AND n.user_id = ?';
+      params.push(userId);
+    }
 
     if (is_read !== undefined) {
       whereClause += ' AND n.is_read = ?';
@@ -36,28 +34,19 @@ const getAll = async (req, res) => {
       params.push(type);
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM notifications n ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated notifications
+    // Get all notifications without pagination
     const [notifications] = await pool.execute(
       `SELECT n.*, u.name as created_by_name
        FROM notifications n
        LEFT JOIN users u ON n.created_by = u.id
        ${whereClause}
-       ORDER BY n.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY n.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: notifications,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: notifications
     });
   } catch (error) {
     console.error('Get notifications error:', error);
@@ -75,21 +64,14 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    const userId = req.query.user_id || req.body.user_id || 1;
 
     const [notifications] = await pool.execute(
       `SELECT n.*, u.name as created_by_name
        FROM notifications n
        LEFT JOIN users u ON n.created_by = u.id
-       WHERE n.id = ? AND n.user_id = ? AND n.is_deleted = 0`,
-      [id, userId]
+       WHERE n.id = ? AND n.is_deleted = 0`,
+      [id]
     );
 
     if (notifications.length === 0) {
@@ -141,8 +123,8 @@ const create = async (req, res) => {
       });
     }
 
-    const companyId = req.body.company_id || req.companyId;
-    const createdBy = req.body.created_by || req.userId;
+    const companyId = req.body.company_id || req.query.company_id || 1;
+    const createdBy = req.body.created_by || req.body.user_id || req.query.user_id || null;
 
     const [result] = await pool.execute(
       `INSERT INTO notifications (
@@ -188,18 +170,11 @@ const create = async (req, res) => {
 const markAsRead = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    const userId = req.query.user_id || req.body.user_id || 1;
 
     const [result] = await pool.execute(
-      'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
-      [id, userId]
+      'UPDATE notifications SET is_read = 1 WHERE id = ?',
+      [id]
     );
 
     if (result.affectedRows === 0) {
@@ -228,14 +203,7 @@ const markAsRead = async (req, res) => {
  */
 const markAllAsRead = async (req, res) => {
   try {
-    const userId = req.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    const userId = req.query.user_id || req.body.user_id || 1;
 
     await pool.execute(
       'UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0',
@@ -262,18 +230,11 @@ const markAllAsRead = async (req, res) => {
 const deleteNotification = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    const userId = req.query.user_id || req.body.user_id || 1;
 
     const [result] = await pool.execute(
-      'UPDATE notifications SET is_deleted = 1 WHERE id = ? AND user_id = ?',
-      [id, userId]
+      'UPDATE notifications SET is_deleted = 1 WHERE id = ?',
+      [id]
     );
 
     if (result.affectedRows === 0) {
@@ -302,14 +263,7 @@ const deleteNotification = async (req, res) => {
  */
 const getUnreadCount = async (req, res) => {
   try {
-    const userId = req.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        error: 'User ID is required'
-      });
-    }
+    const userId = req.query.user_id || req.body.user_id || 1;
 
     const [result] = await pool.execute(
       'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0 AND is_deleted = 0',

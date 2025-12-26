@@ -1,13 +1,9 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
     // Only filter by company_id if explicitly provided in query params
-    const filterCompanyId = req.query.company_id;
+    const filterCompanyId = req.query.company_id || req.body.company_id || null;
     
     let whereClause = 'WHERE p.is_deleted = 0';
     const params = [];
@@ -17,15 +13,8 @@ const getAll = async (req, res) => {
       whereClause += ' AND p.company_id = ?';
       params.push(filterCompanyId);
     }
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM positions p ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated positions - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all positions without pagination
     const [positions] = await pool.execute(
       `SELECT p.*, 
               d.name as department_name,
@@ -35,15 +24,13 @@ const getAll = async (req, res) => {
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN companies c ON p.company_id = c.id
        ${whereClause}
-       ORDER BY p.name
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY p.name`,
       params
     );
     
     res.json({ 
       success: true, 
-      data: positions,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: positions
     });
   } catch (error) {
     console.error('Get positions error:', error);

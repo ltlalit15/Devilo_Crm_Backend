@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateEstimateNumber = async (companyId) => {
   try {
@@ -65,11 +64,9 @@ const generateEstimateNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
-    // Only filter by company_id if explicitly provided in query params or req.companyId exists
-    const filterCompanyId = req.query.company_id || req.companyId;
+    // No pagination - return all estimates
+    // Only filter by company_id if explicitly provided in query params
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const status = req.query.status;
     const search = req.query.search || req.query.query;
     const clientId = req.query.client_id;
@@ -113,21 +110,15 @@ const getAll = async (req, res) => {
       params.push(endDate);
     }
     
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM estimates e ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
+    // No pagination needed - removed count query
 
-    // Get paginated estimates - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all estimates without pagination - removed estimate_date column (doesn't exist)
     const [estimates] = await pool.execute(
       `SELECT 
         e.id,
         e.company_id,
         e.estimate_number,
         e.created_at,
-        e.estimate_date,
         e.created_by,
         e.valid_till,
         e.currency,
@@ -145,8 +136,6 @@ const getAll = async (req, res) => {
         e.total,
         e.estimate_request_number,
         e.status,
-        e.created_by,
-        e.created_at,
         e.updated_at,
         e.is_deleted,
         c.company_name as client_name,
@@ -159,8 +148,7 @@ const getAll = async (req, res) => {
        LEFT JOIN companies comp ON e.company_id = comp.id
        LEFT JOIN users u ON e.created_by = u.id
        ${whereClause}
-       ORDER BY e.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY e.created_at DESC`,
       params
     );
 
@@ -187,11 +175,10 @@ const getAll = async (req, res) => {
       estimate.items = items || [];
     }
 
-    // Return response in the exact format expected
+    // Return response without pagination
     res.json({ 
       success: true, 
-      data: estimates,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: estimates
     });
   } catch (error) {
     console.error('Get estimates error:', error);
@@ -250,13 +237,7 @@ const create = async (req, res) => {
       });
     }
 
-    const companyId = req.body.company_id || req.companyId;
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: "company_id is required"
-      });
-    }
+    const companyId = req.body.company_id || req.query.company_id || 1;
     const estimate_number = await generateEstimateNumber(companyId);
     
     // Calculate totals from items
@@ -286,7 +267,7 @@ const create = async (req, res) => {
         totals.discount_amount,
         totals.tax_amount,
         totals.total,
-        req.userId ?? null
+        req.body.user_id || req.query.user_id || null
       ]
     );
 
@@ -551,10 +532,11 @@ const convertToInvoice = async (req, res) => {
     const { id } = req.params;
     const { invoice_date, due_date, items: requestItems } = req.body;
 
+    const companyId = req.query.company_id || req.body.company_id || 1;
     // Get estimate
     const [estimates] = await pool.execute(
-      `SELECT * FROM estimates WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT * FROM estimates WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (estimates.length === 0) {
@@ -597,7 +579,7 @@ const convertToInvoice = async (req, res) => {
     }
 
     // Generate invoice number
-    const invoice_number = await generateInvoiceNumber(req.companyId);
+    const invoice_number = await generateInvoiceNumber(companyId);
 
     // Convert estimate items to invoice items format
     const invoiceItems = estimateItems.map(item => {
@@ -682,8 +664,8 @@ const convertToInvoice = async (req, res) => {
         `UPDATE estimates SET 
           sub_total = ?, discount_amount = ?, tax_amount = ?, total = ?,
           updated_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND company_id = ?`,
-        [totals.sub_total, totals.discount_amount, totals.tax_amount, totals.total, id, req.companyId]
+         WHERE id = ?`,
+        [totals.sub_total, totals.discount_amount, totals.tax_amount, totals.total, id]
       );
     }
 
@@ -696,7 +678,7 @@ const convertToInvoice = async (req, res) => {
         total, unpaid, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         invoice_number,
         invoice_date,
         due_date,
@@ -715,7 +697,7 @@ const convertToInvoice = async (req, res) => {
         totals.total,
         totals.unpaid,
         'Unpaid',
-        req.userId ?? null
+        req.body.user_id || req.query.user_id || null
       ]
     );
 
@@ -746,8 +728,8 @@ const convertToInvoice = async (req, res) => {
     // Update estimate status to 'Accepted'
     await pool.execute(
       `UPDATE estimates SET status = 'Accepted', updated_at = CURRENT_TIMESTAMP 
-       WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+       WHERE id = ?`,
+      [id]
     );
 
     // Get created invoice

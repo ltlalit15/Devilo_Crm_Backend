@@ -2,9 +2,10 @@ const pool = require('../config/db');
 
 const get = async (req, res) => {
   try {
+    const companyId = req.query.company_id || req.body.company_id || 1;
     const [settings] = await pool.execute(
       `SELECT * FROM system_settings WHERE company_id = ? OR company_id IS NULL`,
-      [req.companyId]
+      [companyId]
     );
     res.json({ success: true, data: settings });
   } catch (error) {
@@ -16,12 +17,7 @@ const update = async (req, res) => {
   try {
     // Handle bulk update (array of settings)
     if (Array.isArray(req.body)) {
-      if (!req.companyId) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Company ID is required' 
-        });
-      }
+      const companyId = req.query.company_id || req.body.company_id || 1;
 
       const results = [];
       for (const setting of req.body) {
@@ -35,7 +31,7 @@ const update = async (req, res) => {
           `INSERT INTO system_settings (company_id, setting_key, setting_value)
            VALUES (?, ?, ?)
            ON DUPLICATE KEY UPDATE setting_value = ?`,
-          [req.companyId, setting.setting_key, setting_value, setting_value]
+          [companyId, setting.setting_key, setting_value, setting_value]
         );
         results.push({ setting_key: setting.setting_key, success: true });
       }
@@ -72,19 +68,13 @@ const update = async (req, res) => {
       });
     }
     
-    // Check if companyId exists
-    if (!req.companyId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Company ID is required. Please ensure you are logged in with a valid company account.' 
-      });
-    }
+    const companyId = req.query.company_id || req.body.company_id || 1;
     
     await pool.execute(
       `INSERT INTO system_settings (company_id, setting_key, setting_value)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE setting_value = ?`,
-      [req.companyId, setting_key, setting_value, setting_value]
+      [companyId, setting_key, setting_value, setting_value]
     );
     
     res.json({ 
@@ -112,12 +102,13 @@ const update = async (req, res) => {
 const getByCategory = async (req, res) => {
   try {
     const { category } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
     
     const [settings] = await pool.execute(
       `SELECT * FROM system_settings 
        WHERE (company_id = ? OR company_id IS NULL)
        AND setting_key LIKE ?`,
-      [req.companyId || null, `${category}%`]
+      [companyId, `${category}%`]
     );
     
     res.json({ success: true, data: settings });
@@ -142,12 +133,7 @@ const bulkUpdate = async (req, res) => {
       });
     }
 
-    if (!req.companyId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Company ID is required' 
-      });
-    }
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     const results = [];
     for (const setting of settings) {
@@ -161,7 +147,7 @@ const bulkUpdate = async (req, res) => {
         `INSERT INTO system_settings (company_id, setting_key, setting_value)
          VALUES (?, ?, ?)
          ON DUPLICATE KEY UPDATE setting_value = ?`,
-        [req.companyId, setting.setting_key, setting_value, setting_value]
+        [companyId, setting.setting_key, setting_value, setting_value]
       );
       results.push({ setting_key: setting.setting_key, success: true });
     }

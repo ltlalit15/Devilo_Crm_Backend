@@ -11,8 +11,7 @@ const bcrypt = require('bcryptjs');
  */
 const getAllCompanies = async (req, res) => {
   try {
-    const { page = 1, limit = 50, search = '', status = '' } = req.query;
-    const offset = (page - 1) * limit;
+    const { search = '', status = '' } = req.query;
 
     let query = `
       SELECT 
@@ -51,36 +50,14 @@ const getAllCompanies = async (req, res) => {
       query += ` AND c.is_deleted = 1`;
     }
 
-    query += ` GROUP BY c.id ORDER BY c.created_at DESC LIMIT ? OFFSET ?`;
-    queryParams.push(parseInt(limit), parseInt(offset));
+    // No pagination - return all companies
+    query += ` GROUP BY c.id ORDER BY c.created_at DESC`;
 
     const [companies] = await pool.execute(query, queryParams);
 
-    // Get total count
-    let countQuery = `SELECT COUNT(DISTINCT c.id) as total FROM companies c WHERE 1=1`;
-    const countParams = [];
-    if (search) {
-      countQuery += ` AND (c.name LIKE ? OR c.industry LIKE ? OR c.website LIKE ?)`;
-      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    if (status === 'active') {
-      countQuery += ` AND c.is_deleted = 0`;
-    } else if (status === 'deleted') {
-      countQuery += ` AND c.is_deleted = 1`;
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
-
     res.json({
       success: true,
-      data: companies,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: companies
     });
   } catch (error) {
     console.error('Get all companies error:', error);
@@ -547,8 +524,7 @@ const getSystemStats = async (req, res) => {
  */
 const getAllUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 50, search = '', role = '', company_id = '' } = req.query;
-    const offset = (page - 1) * limit;
+    const { search = '', role = '', company_id = '' } = req.query;
 
     let query = `
       SELECT 
@@ -583,39 +559,14 @@ const getAllUsers = async (req, res) => {
       queryParams.push(company_id);
     }
 
-    query += ` ORDER BY u.created_at DESC LIMIT ? OFFSET ?`;
-    queryParams.push(parseInt(limit), parseInt(offset));
+    // No pagination - return all users
+    query += ` ORDER BY u.created_at DESC`;
 
     const [users] = await pool.execute(query, queryParams);
 
-    // Get total count
-    let countQuery = `SELECT COUNT(*) as total FROM users u WHERE u.is_deleted = 0`;
-    const countParams = [];
-    if (search) {
-      countQuery += ` AND (u.name LIKE ? OR u.email LIKE ?)`;
-      countParams.push(`%${search}%`, `%${search}%`);
-    }
-    if (role) {
-      countQuery += ` AND u.role = ?`;
-      countParams.push(role);
-    }
-    if (company_id) {
-      countQuery += ` AND u.company_id = ?`;
-      countParams.push(company_id);
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
-
     res.json({
       success: true,
-      data: users,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: users
     });
   } catch (error) {
     console.error('Get all users error:', error);
@@ -632,8 +583,7 @@ const getAllUsers = async (req, res) => {
  */
 const getAllPackages = async (req, res) => {
   try {
-    const { page = 1, limit = 50, search = '', status = '' } = req.query;
-    const offset = (page - 1) * limit;
+    const { search = '', status = '' } = req.query;
 
     let query = `
       SELECT 
@@ -656,41 +606,30 @@ const getAllPackages = async (req, res) => {
       queryParams.push(status);
     }
 
-    query += ` GROUP BY cp.id ORDER BY cp.created_at DESC LIMIT ? OFFSET ?`;
-    queryParams.push(parseInt(limit), parseInt(offset));
+    // No pagination - return all packages
+    query += ` GROUP BY cp.id ORDER BY cp.created_at DESC`;
 
     const [packages] = await pool.execute(query, queryParams);
 
-    // Get total count
-    let countQuery = `SELECT COUNT(*) as total FROM company_packages cp WHERE cp.is_deleted = 0`;
-    const countParams = [];
-    if (search) {
-      countQuery += ` AND cp.package_name LIKE ?`;
-      countParams.push(`%${search}%`);
-    }
-    if (status) {
-      countQuery += ` AND cp.status = ?`;
-      countParams.push(status);
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
-
     res.json({
       success: true,
-      data: packages,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: packages
     });
   } catch (error) {
     console.error('Get all packages error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch packages'
+      error: 'Failed to fetch packages',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      errorCode: error.code,
+      sqlMessage: process.env.NODE_ENV === 'development' ? error.sqlMessage : undefined
     });
   }
 };
@@ -991,8 +930,7 @@ const getBillingInfo = async (req, res) => {
  */
 const getOfflineRequests = async (req, res) => {
   try {
-    const { page = 1, limit = 50, status = '', search = '', company_id = '' } = req.query;
-    const offset = (page - 1) * limit;
+    const { status = '', search = '', company_id = '' } = req.query;
 
     let whereClause = 'WHERE offline_req.is_deleted = 0';
     const params = [];
@@ -1013,33 +951,19 @@ const getOfflineRequests = async (req, res) => {
       params.push(company_id);
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM offline_requests offline_req ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated requests
+    // No pagination - return all requests
     const [requests] = await pool.execute(
       `SELECT offline_req.*, c.name as company_name_from_db
        FROM offline_requests offline_req
        LEFT JOIN companies c ON offline_req.company_id = c.id
        ${whereClause}
-       ORDER BY offline_req.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, parseInt(limit), parseInt(offset)]
+       ORDER BY offline_req.created_at DESC`,
+      params
     );
 
     res.json({
       success: true,
-      data: requests,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: requests
     });
   } catch (error) {
     console.error('Get offline requests error:', error);
@@ -1325,8 +1249,7 @@ const deleteOfflineRequest = async (req, res) => {
  */
 const getSupportTickets = async (req, res) => {
   try {
-    const { page = 1, limit = 50, status = '', priority = '' } = req.query;
-    const offset = (page - 1) * limit;
+    const { status = '', priority = '' } = req.query;
 
     let query = `
       SELECT 
@@ -1354,35 +1277,14 @@ const getSupportTickets = async (req, res) => {
       params.push(priority);
     }
 
-    query += ` ORDER BY t.created_at DESC LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
+    // No pagination - return all tickets
+    query += ` ORDER BY t.created_at DESC`;
 
     const [tickets] = await pool.execute(query, params);
 
-    // Get total count
-    let countQuery = `SELECT COUNT(*) as total FROM tickets t WHERE t.is_deleted = 0`;
-    const countParams = [];
-    if (status) {
-      countQuery += ` AND t.status = ?`;
-      countParams.push(status);
-    }
-    if (priority) {
-      countQuery += ` AND t.priority = ?`;
-      countParams.push(priority);
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
-
     res.json({
       success: true,
-      data: tickets,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      data: tickets
     });
   } catch (error) {
     console.error('Get support tickets error:', error);
