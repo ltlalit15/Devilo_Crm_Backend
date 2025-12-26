@@ -25,6 +25,7 @@ const getAllCompanies = async (req, res) => {
         c.currency,
         c.timezone,
         c.package_id,
+        cp.package_name,
         c.created_at,
         c.updated_at,
         c.is_deleted,
@@ -35,6 +36,7 @@ const getAllCompanies = async (req, res) => {
       LEFT JOIN users u ON c.id = u.company_id AND u.is_deleted = 0
       LEFT JOIN clients cl ON c.id = cl.company_id AND cl.is_deleted = 0
       LEFT JOIN projects p ON c.id = p.company_id AND p.is_deleted = 0
+      LEFT JOIN company_packages cp ON c.package_id = cp.id
       WHERE 1=1
     `;
     const queryParams = [];
@@ -526,6 +528,7 @@ const getAllUsers = async (req, res) => {
   try {
     const { search = '', role = '', company_id = '' } = req.query;
 
+    // Only show ADMIN users - filter out EMPLOYEE and CLIENT
     let query = `
       SELECT 
         u.id,
@@ -540,18 +543,13 @@ const getAllUsers = async (req, res) => {
         c.name as company_name
       FROM users u
       LEFT JOIN companies c ON u.company_id = c.id
-      WHERE u.is_deleted = 0
+      WHERE u.is_deleted = 0 AND u.role = 'ADMIN'
     `;
     const queryParams = [];
 
     if (search) {
-      query += ` AND (u.name LIKE ? OR u.email LIKE ? OR c.name LIKE ?)`;
-      queryParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-
-    if (role) {
-      query += ` AND u.role = ?`;
-      queryParams.push(role);
+      query += ` AND (u.name LIKE ? OR u.email LIKE ?)`;
+      queryParams.push(`%${search}%`, `%${search}%`);
     }
 
     if (company_id) {
@@ -559,7 +557,7 @@ const getAllUsers = async (req, res) => {
       queryParams.push(company_id);
     }
 
-    // No pagination - return all users
+    // No pagination - return all ADMIN users only
     query += ` ORDER BY u.created_at DESC`;
 
     const [users] = await pool.execute(query, queryParams);
@@ -573,6 +571,333 @@ const getAllUsers = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch users'
+    });
+  }
+};
+
+/**
+ * Get user by ID
+ * GET /api/v1/superadmin/users/:id
+ */
+const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [users] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.company_id,
+        u.name,
+        u.email,
+        u.role,
+        u.status,
+        u.avatar,
+        u.phone,
+        u.created_at,
+        c.name as company_name
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      WHERE u.id = ? AND u.is_deleted = 0`,
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: users[0]
+    });
+  } catch (error) {
+    console.error('Get user by ID error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch user'
+    });
+  }
+};
+
+/**
+ * Create user (SuperAdmin can assign to any company)
+ * POST /api/v1/superadmin/users
+ */
+const createUser = async (req, res) => {
+  try {
+    const { name, email, password, role, company_id, status } = req.body;
+
+    // Validation
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({
+        success: false,
+        error: 'name, email, password, and role are required'
+      });
+    }
+
+    // Validate role
+    const validRoles = ['SUPERADMIN', 'ADMIN', 'EMPLOYEE', 'CLIENT'];
+    if (!validRoles.includes(role.toUpperCase())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Must be SUPERADMIN, ADMIN, EMPLOYEE, or CLIENT'
+      });
+    }
+
+    // Check if user already exists
+    const [existingUsers] = await pool.execute(
+      `SELECT id FROM users WHERE email = ? AND is_deleted = 0`,
+      [email]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'User with this email already exists'
+      });
+    }
+
+    // If company_id is provided, verify company exists
+    if (company_id) {
+      const [companies] = await pool.execute(
+        `SELECT id FROM companies WHERE id = ? AND is_deleted = 0`,
+        [company_id]
+      );
+      if (companies.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Company not found'
+        });
+      }
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insert user
+    const [result] = await pool.execute(
+      `INSERT INTO users (company_id, name, email, password, role, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        company_id || null,
+        name.trim(),
+        email.trim().toLowerCase(),
+        hashedPassword,
+        role.toUpperCase(),
+        status || 'Active'
+      ]
+    );
+
+    // Get created user (without password)
+    const [users] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.company_id,
+        u.name,
+        u.email,
+        u.role,
+        u.status,
+        u.avatar,
+        u.phone,
+        u.created_at,
+        c.name as company_name
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      WHERE u.id = ?`,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: users[0],
+      message: 'User created successfully'
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create user'
+    });
+  }
+};
+
+/**
+ * Update user
+ * PUT /api/v1/superadmin/users/:id
+ */
+const updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, email, password, role, company_id, status } = req.body;
+
+    // Check if user exists
+    const [existingUsers] = await pool.execute(
+      `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (existingUsers.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // If email is being changed, check if new email already exists
+    if (email) {
+      const [emailCheck] = await pool.execute(
+        `SELECT id FROM users WHERE email = ? AND id != ? AND is_deleted = 0`,
+        [email.trim().toLowerCase(), id]
+      );
+      if (emailCheck.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'User with this email already exists'
+        });
+      }
+    }
+
+    // If company_id is provided, verify company exists
+    if (company_id) {
+      const [companies] = await pool.execute(
+        `SELECT id FROM companies WHERE id = ? AND is_deleted = 0`,
+        [company_id]
+      );
+      if (companies.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Company not found'
+        });
+      }
+    }
+
+    // Validate role if provided
+    if (role) {
+      const validRoles = ['SUPERADMIN', 'ADMIN', 'EMPLOYEE', 'CLIENT'];
+      if (!validRoles.includes(role.toUpperCase())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid role. Must be SUPERADMIN, ADMIN, EMPLOYEE, or CLIENT'
+        });
+      }
+    }
+
+    // Build update query dynamically
+    const updates = [];
+    const params = [];
+
+    if (name) {
+      updates.push('name = ?');
+      params.push(name.trim());
+    }
+    if (email) {
+      updates.push('email = ?');
+      params.push(email.trim().toLowerCase());
+    }
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updates.push('password = ?');
+      params.push(hashedPassword);
+    }
+    if (role) {
+      updates.push('role = ?');
+      params.push(role.toUpperCase());
+    }
+    if (company_id !== undefined) {
+      updates.push('company_id = ?');
+      params.push(company_id || null);
+    }
+    if (status) {
+      updates.push('status = ?');
+      params.push(status);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No fields to update'
+      });
+    }
+
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(id);
+
+    await pool.execute(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
+      params
+    );
+
+    // Get updated user
+    const [users] = await pool.execute(
+      `SELECT 
+        u.id,
+        u.company_id,
+        u.name,
+        u.email,
+        u.role,
+        u.status,
+        u.avatar,
+        u.phone,
+        u.created_at,
+        c.name as company_name
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      WHERE u.id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: users[0],
+      message: 'User updated successfully'
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update user'
+    });
+  }
+};
+
+/**
+ * Delete user (soft delete)
+ * DELETE /api/v1/superadmin/users/:id
+ */
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user exists
+    const [users] = await pool.execute(
+      `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Soft delete
+    await pool.execute(
+      `UPDATE users SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete user'
     });
   }
 };
@@ -953,9 +1278,10 @@ const getOfflineRequests = async (req, res) => {
 
     // No pagination - return all requests
     const [requests] = await pool.execute(
-      `SELECT offline_req.*, c.name as company_name_from_db
+      `SELECT offline_req.*, c.name as company_name_from_db, cp.package_name
        FROM offline_requests offline_req
        LEFT JOIN companies c ON offline_req.company_id = c.id
+       LEFT JOIN company_packages cp ON offline_req.package_id = cp.id
        ${whereClause}
        ORDER BY offline_req.created_at DESC`,
       params
@@ -1028,7 +1354,8 @@ const createOfflineRequest = async (req, res) => {
       payment_method,
       description,
       status = 'Pending',
-      notes
+      notes,
+      package_id
     } = req.body;
 
     // Improved validation with specific error messages
@@ -1053,12 +1380,12 @@ const createOfflineRequest = async (req, res) => {
 
     const [result] = await pool.execute(
       `INSERT INTO offline_requests (
-        company_id, company_name, request_type, contact_name, contact_email,
+        company_id, package_id, company_name, request_type, contact_name, contact_email,
         contact_phone, amount, currency, payment_method, description,
         status, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
-        company_id || null, company_name, request_type, contact_name, contact_email || null,
+        company_id || null, package_id || null, company_name, request_type, contact_name, contact_email || null,
         contact_phone || null, amount || null, currency, payment_method || null, description || null,
         status, notes || null
       ]
@@ -1102,7 +1429,8 @@ const updateOfflineRequest = async (req, res) => {
       payment_method,
       description,
       status,
-      notes
+      notes,
+      package_id
     } = req.body;
 
     // Check if request exists
@@ -1170,6 +1498,10 @@ const updateOfflineRequest = async (req, res) => {
       updates.push('notes = ?');
       params.push(notes);
     }
+    if (package_id !== undefined) {
+      updates.push('package_id = ?');
+      params.push(package_id);
+    }
 
     if (updates.length === 0) {
       return res.status(400).json({
@@ -1201,6 +1533,151 @@ const updateOfflineRequest = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to update offline request'
+    });
+  }
+};
+
+/**
+ * Accept company request and create company
+ * POST /api/v1/superadmin/offline-requests/:id/accept
+ */
+const acceptCompanyRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get request details
+    const [requests] = await pool.execute(
+      `SELECT * FROM offline_requests WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (requests.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Request not found'
+      });
+    }
+
+    const request = requests[0];
+
+    if (request.request_type !== 'Company Request') {
+      return res.status(400).json({
+        success: false,
+        error: 'This endpoint is only for Company Request type'
+      });
+    }
+
+    if (request.status === 'Approved' || request.status === 'Completed') {
+      return res.status(400).json({
+        success: false,
+        error: 'Request already processed'
+      });
+    }
+
+    // Create company
+    const [companyResult] = await pool.execute(
+      `INSERT INTO companies 
+        (name, industry, website, address, notes, currency, timezone, package_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [
+        request.company_name,
+        null, // industry
+        null, // website
+        null, // address
+        request.description || null, // notes
+        'USD', // currency
+        'UTC', // timezone
+        request.package_id || null // package_id
+      ]
+    );
+
+    const companyId = companyResult.insertId;
+
+    // Update request status and link to company
+    await pool.execute(
+      `UPDATE offline_requests 
+       SET status = 'Approved', company_id = ?, updated_at = NOW() 
+       WHERE id = ?`,
+      [companyId, id]
+    );
+
+    // Get created company
+    const [newCompany] = await pool.execute(
+      'SELECT * FROM companies WHERE id = ?',
+      [companyId]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        company: newCompany[0],
+        request: { ...request, status: 'Approved', company_id: companyId }
+      },
+      message: 'Company request accepted and company created successfully'
+    });
+  } catch (error) {
+    console.error('Accept company request error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to accept company request'
+    });
+  }
+};
+
+/**
+ * Reject company request
+ * POST /api/v1/superadmin/offline-requests/:id/reject
+ */
+const rejectCompanyRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejection_reason } = req.body;
+
+    // Get request details
+    const [requests] = await pool.execute(
+      `SELECT * FROM offline_requests WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    if (requests.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Request not found'
+      });
+    }
+
+    const request = requests[0];
+
+    if (request.status === 'Approved' || request.status === 'Completed') {
+      return res.status(400).json({
+        success: false,
+        error: 'Request already processed'
+      });
+    }
+
+    // Update request status
+    await pool.execute(
+      `UPDATE offline_requests 
+       SET status = 'Rejected', notes = ?, updated_at = NOW() 
+       WHERE id = ?`,
+      [rejection_reason || 'Request rejected', id]
+    );
+
+    const [updatedRequest] = await pool.execute(
+      'SELECT * FROM offline_requests WHERE id = ?',
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: updatedRequest[0],
+      message: 'Company request rejected successfully'
+    });
+  } catch (error) {
+    console.error('Reject company request error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject company request'
     });
   }
 };
@@ -1386,6 +1863,10 @@ module.exports = {
   deleteCompany,
   getSystemStats,
   getAllUsers,
+  getUserById,
+  createUser,
+  updateUser,
+  deleteUser,
   getAllPackages,
   getPackageById,
   createPackage,
@@ -1397,6 +1878,8 @@ module.exports = {
   createOfflineRequest,
   updateOfflineRequest,
   deleteOfflineRequest,
+  acceptCompanyRequest,
+  rejectCompanyRequest,
   getSupportTickets,
   getSystemSettings,
   updateSystemSettings

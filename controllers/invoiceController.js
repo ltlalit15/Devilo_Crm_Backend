@@ -53,15 +53,18 @@ const getAll = async (req, res) => {
   try {
     const { status, client_id, search, start_date, end_date, project_id } = req.query;
 
-    let whereClause = 'WHERE i.is_deleted = 0';
-    const params = [];
-
-    // Company filter
-    const filterCompanyId = req.query.company_id || req.companyId;
-    if (filterCompanyId) {
-      whereClause += ' AND i.company_id = ?';
-      params.push(filterCompanyId);
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+
+    let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
+    const params = [filterCompanyId];
 
     // Status filter
     if (status && status !== 'All' && status !== 'all') {

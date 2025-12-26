@@ -10,17 +10,20 @@ const pool = require('../config/db');
  */
 const getAll = async (req, res) => {
   try {
-    const { client_id, invoice_id, company_id } = req.query;
-    const companyId = company_id || req.query.company_id || req.body.company_id || 1;
-
-    let whereClause = 'WHERE p.is_deleted = 0';
-    const params = [];
-
-    // Add company_id filter only if provided
-    if (companyId) {
-      whereClause += ' AND p.company_id = ?';
-      params.push(companyId);
+    const { client_id, invoice_id } = req.query;
+    
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+
+    let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
+    const params = [companyId];
 
     if (client_id) {
       whereClause += ` AND p.invoice_id IN (

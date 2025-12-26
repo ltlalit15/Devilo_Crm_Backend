@@ -11,7 +11,15 @@ const pool = require('../config/db');
 const getAll = async (req, res) => {
   try {
     const { status, owner_id, source, city } = req.query;
-    const companyId = req.companyId || req.query.company_id || 1;
+    // Admin must provide company_id - no default fallback
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     let whereClause = 'WHERE l.company_id = ? AND l.is_deleted = 0';
     const params = [companyId];
@@ -35,9 +43,10 @@ const getAll = async (req, res) => {
 
     // Get all leads without pagination
     const [leads] = await pool.execute(
-      `SELECT l.*, u.name as owner_name, u.email as owner_email
+      `SELECT l.*, u.name as owner_name, u.email as owner_email, c.name as company_name
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
+       LEFT JOIN companies c ON l.company_id = c.id
        ${whereClause}
        ORDER BY l.created_at DESC`,
       params
@@ -73,11 +82,20 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const companyId = req.companyId || req.query.company_id || 1;
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
     const [leads] = await pool.execute(
-      `SELECT l.*, u.name as owner_name, u.email as owner_email
+      `SELECT l.*, u.name as owner_name, u.email as owner_email, c.name as company_name
        FROM leads l
        LEFT JOIN users u ON l.owner_id = u.id
+       LEFT JOIN companies c ON l.company_id = c.id
        WHERE l.id = ? AND l.company_id = ? AND l.is_deleted = 0`,
       [id, companyId]
     );
@@ -134,7 +152,8 @@ const create = async (req, res) => {
 
     // Insert lead - convert undefined to null for SQL
     const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
-    const userId = req.userId || req.body.user_id || req.query.user_id || null;
+    // Get created_by from user session, body, query, or use owner_id as fallback
+    const userId = req.userId || req.body.user_id || req.query.user_id || req.body.created_by || owner_id || 1;
     const [result] = await pool.execute(
       `INSERT INTO leads (
         company_id, lead_type, company_name, person_name, email, phone,
@@ -160,8 +179,8 @@ const create = async (req, res) => {
         due_followup ?? null,
         notes ?? null,
         probability ?? null,
-        call_this_week || 0,
-        userId
+        call_this_week ? 1 : 0, // Convert boolean to 0/1 for TINYINT
+        userId // Now always has a value (owner_id or 1 as fallback)
       ]
     );
 
@@ -176,9 +195,13 @@ const create = async (req, res) => {
       );
     }
 
-    // Get created lead
+    // Get created lead with company name and owner details
     const [leads] = await pool.execute(
-      `SELECT * FROM leads WHERE id = ?`,
+      `SELECT l.*, u.name as owner_name, u.email as owner_email, c.name as company_name
+       FROM leads l
+       LEFT JOIN users u ON l.owner_id = u.id
+       LEFT JOIN companies c ON l.company_id = c.id
+       WHERE l.id = ?`,
       [leadId]
     );
 
@@ -270,22 +293,44 @@ const update = async (req, res) => {
       }
     }
 
-    // Get updated lead
+    // Get updated lead with company name
     const [updatedLeads] = await pool.execute(
-      `SELECT * FROM leads WHERE id = ?`,
+      `SELECT l.*, u.name as owner_name, u.email as owner_email, c.name as company_name
+       FROM leads l
+       LEFT JOIN users u ON l.owner_id = u.id
+       LEFT JOIN companies c ON l.company_id = c.id
+       WHERE l.id = ?`,
       [id]
     );
 
+    const updatedLead = updatedLeads[0];
+
+    // Get labels for updated lead
+    if (updatedLead) {
+      const [labels] = await pool.execute(
+        `SELECT label FROM lead_labels WHERE lead_id = ?`,
+        [id]
+      );
+      updatedLead.labels = labels.map(l => l.label);
+    }
+
     res.json({
       success: true,
-      data: updatedLeads[0],
+      data: updatedLead,
       message: 'Lead updated successfully'
     });
   } catch (error) {
     console.error('Update lead error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage,
+      code: error.code,
+      errno: error.errno,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to update lead'
+      error: error.sqlMessage || error.message || 'Failed to update lead'
     });
   }
 };
@@ -739,11 +784,20 @@ const bulkAction = async (req, res) => {
  */
 const getAllContacts = async (req, res) => {
   try {
-    const companyId = req.companyId || req.query.company_id || 1;
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
     const { contact_type, status, search, lead_id } = req.query;
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
-    const params = [companyId];
+    const params = [parseInt(companyId)];
 
     if (contact_type) {
       whereClause += ' AND c.contact_type = ?';
@@ -785,9 +839,17 @@ const getAllContacts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get all contacts error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
       error: 'Failed to fetch contacts',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -863,7 +925,16 @@ const createContact = async (req, res) => {
       status = 'Active',
       notes,
     } = req.body;
-    const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
+    
+    // Admin must provide company_id - required for filtering
+    const companyId = req.body.company_id || req.query.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required',
+      });
+    }
 
     if (!name) {
       return res.status(400).json({
@@ -877,8 +948,8 @@ const createContact = async (req, res) => {
     if (company_id) {
       try {
         const [companyData] = await pool.execute(
-          'SELECT name FROM companies WHERE id = ? AND company_id = ?',
-          [company_id, companyId]
+          'SELECT name FROM companies WHERE id = ?',
+          [company_id]
         );
         if (companyData.length > 0) {
           finalCompanyName = companyData[0].name;
@@ -889,22 +960,29 @@ const createContact = async (req, res) => {
       }
     }
 
+    // Convert empty strings to null for optional fields
+    const finalLeadId = lead_id && lead_id !== '' ? parseInt(lead_id) : null;
+    const finalEmail = email && email.trim() !== '' ? email.trim() : null;
+    const finalPhone = phone && phone.trim() !== '' ? phone.trim() : null;
+    const finalAssignedUserId = assigned_user_id && assigned_user_id !== '' ? parseInt(assigned_user_id) : null;
+    const finalNotes = notes && notes.trim() !== '' ? notes.trim() : null;
+
     const [result] = await pool.execute(
       `INSERT INTO contacts (
         company_id, lead_id, name, company, email, phone,
         contact_type, assigned_user_id, status, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        companyId,
-        lead_id || null,
-        name,
+        parseInt(companyId),
+        finalLeadId,
+        name.trim(),
         finalCompanyName,
-        email || null,
-        phone || null,
+        finalEmail,
+        finalPhone,
         contact_type,
-        assigned_user_id || null,
+        finalAssignedUserId,
         status,
-        notes || null,
+        finalNotes,
       ]
     );
 
@@ -920,9 +998,17 @@ const createContact = async (req, res) => {
     });
   } catch (error) {
     console.error('Create contact error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
       error: 'Failed to create contact',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

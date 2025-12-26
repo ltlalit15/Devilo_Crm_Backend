@@ -2,18 +2,18 @@ const pool = require('../config/db');
 
 const getAll = async (req, res) => {
   try {
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all departments by default
-    const filterCompanyId = req.query.company_id || req.body.company_id || null;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE d.is_deleted = 0';
-    const params = [];
-    
-    // Add company filter only if explicitly requested via query param
-    if (filterCompanyId) {
-      whereClause += ' AND d.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
+    const params = [filterCompanyId];
     
     console.log('=== GET DEPARTMENTS REQUEST ===');
     console.log('Query params:', req.query);
@@ -122,8 +122,11 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
     
-    if (!req.companyId) {
-      return res.status(400).json({ success: false, error: 'Company ID is required' });
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({ success: false, error: 'company_id is required' });
     }
 
     const [departments] = await pool.execute(
@@ -132,7 +135,7 @@ const getById = async (req, res) => {
        FROM departments d
        LEFT JOIN companies c ON d.company_id = c.id
        WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
     
     if (departments.length === 0) {

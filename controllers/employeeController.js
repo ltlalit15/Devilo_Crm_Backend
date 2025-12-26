@@ -3,20 +3,20 @@ const bcrypt = require('bcryptjs');
 
 const getAll = async (req, res) => {
   try {
-    const { status, department, company_id } = req.query;
+    const { status, department } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all employees by default
-    const filterCompanyId = company_id;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE u.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param
-    if (filterCompanyId) {
-      whereClause += ' AND u.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE u.company_id = ? AND u.is_deleted = 0';
+    const params = [filterCompanyId];
 
     if (status) {
       whereClause += ' AND u.status = ?';

@@ -8,24 +8,29 @@ const generateContractNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    const { status, company_id } = req.query;
+    const { status, lead_id } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all contracts by default
-    const filterCompanyId = company_id || req.query.company_id || req.body.company_id || 1;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE c.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param or req.companyId exists
-    if (filterCompanyId) {
-      whereClause += ' AND c.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
+    const params = [filterCompanyId];
 
     if (status) {
       whereClause += ' AND c.status = ?';
       params.push(status);
+    }
+
+    if (lead_id) {
+      whereClause += ' AND c.lead_id = ?';
+      params.push(parseInt(lead_id));
     }
 
     // Get all contracts without pagination

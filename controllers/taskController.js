@@ -45,20 +45,20 @@ const generateTaskCode = async (projectId, companyId) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { status, project_id, assigned_to, company_id } = req.query;
+    const { status, project_id, assigned_to } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all tasks by default
-    const filterCompanyId = company_id || req.query.company_id || req.body.company_id || 1;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE t.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param or req.companyId exists
-    if (filterCompanyId) {
-      whereClause += ' AND t.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE t.company_id = ? AND t.is_deleted = 0';
+    const params = [filterCompanyId];
 
     if (status) {
       whereClause += ' AND t.status = ?';

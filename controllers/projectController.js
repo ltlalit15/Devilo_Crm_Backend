@@ -31,17 +31,18 @@ const getAll = async (req, res) => {
       progress_max
     } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    const filterCompanyId = company_id || req.companyId;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = company_id || req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE p.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param
-    if (filterCompanyId) {
-      whereClause += ' AND p.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
+    const params = [filterCompanyId];
 
     // Status filter
     if (status && status !== 'All Projects' && status !== 'all') {
@@ -188,6 +189,16 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     const [projects] = await pool.execute(
       `SELECT p.*, 
@@ -200,8 +211,8 @@ const getById = async (req, res) => {
        LEFT JOIN companies comp ON p.company_id = comp.id
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
-       WHERE p.id = ? AND p.is_deleted = 0`,
-      [id]
+       WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
+      [id, companyId]
     );
 
     if (projects.length === 0) {

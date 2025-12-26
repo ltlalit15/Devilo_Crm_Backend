@@ -64,22 +64,25 @@ const generateEstimateNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    // No pagination - return all estimates
-    // Only filter by company_id if explicitly provided in query params
-    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
     const status = req.query.status;
     const search = req.query.search || req.query.query;
     const clientId = req.query.client_id;
+    const leadId = req.query.lead_id;
     const startDate = req.query.start_date;
     const endDate = req.query.end_date;
     
-    let whereClause = 'WHERE e.is_deleted = 0';
-    const params = [];
-    
-    if (filterCompanyId) {
-      whereClause += ' AND e.company_id = ?';
-      params.push(filterCompanyId);
-    }
+    let whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
+    const params = [filterCompanyId];
     
     // Status filter
     if (status && status !== 'All' && status !== 'all') {
@@ -98,6 +101,12 @@ const getAll = async (req, res) => {
     if (clientId) {
       whereClause += ' AND e.client_id = ?';
       params.push(clientId);
+    }
+    
+    // Lead filter
+    if (leadId) {
+      whereClause += ' AND e.lead_id = ?';
+      params.push(parseInt(leadId));
     }
     
     // Date range filter

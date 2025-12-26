@@ -14,8 +14,11 @@ const login = async (req, res) => {
   try {
     const { email, password, role } = req.body;
 
+    console.log('Login attempt - email:', email, 'role:', role);
+
     // Validation
     if (!email || !password) {
+      console.error('Login failed - email or password missing');
       return res.status(400).json({
         success: false,
         error: 'Email and password are required'
@@ -23,6 +26,7 @@ const login = async (req, res) => {
     }
 
     if (!role) {
+      console.error('Login failed - role missing');
       return res.status(400).json({
         success: false,
         error: 'Role is required (SUPERADMIN, ADMIN, EMPLOYEE, or CLIENT)'
@@ -31,6 +35,7 @@ const login = async (req, res) => {
 
     // Normalize role to uppercase for comparison
     const normalizedRole = role.toUpperCase();
+    console.log('Normalized role:', normalizedRole);
 
     // Get user from database
     const [users] = await pool.execute(
@@ -94,7 +99,28 @@ const login = async (req, res) => {
     // Remove password from response
     delete user.password;
 
-    res.json({
+    // Get company name if company_id exists
+    let company_name = null;
+    if (user.company_id) {
+      try {
+        const [companies] = await pool.execute(
+          `SELECT name FROM companies WHERE id = ? AND is_deleted = 0`,
+          [user.company_id]
+        );
+        if (companies.length > 0) {
+          company_name = companies[0].name;
+          console.log('Company name fetched:', company_name, 'for company_id:', user.company_id);
+        } else {
+          console.warn('Company not found for company_id:', user.company_id);
+        }
+      } catch (err) {
+        console.error('Error fetching company name:', err);
+      }
+    } else {
+      console.log('No company_id for user:', user.id);
+    }
+
+    const responseData = {
       success: true,
       token,
       user: {
@@ -102,9 +128,13 @@ const login = async (req, res) => {
         company_id: user.company_id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        company_name: company_name
       }
-    });
+    };
+
+    console.log('Login successful - user:', user.email, 'company_id:', user.company_id, 'company_name:', company_name);
+    res.json(responseData);
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({
@@ -148,11 +178,13 @@ const getCurrentUser = async (req, res) => {
               u.bank_name, u.bank_account_number, u.bank_ifsc, u.bank_branch, u.created_at,
               e.department_id, e.position_id,
               d.name as department_name,
-              p.name as position_name
+              p.name as position_name,
+              c.name as company_name
        FROM users u
        LEFT JOIN employees e ON u.id = e.user_id
        LEFT JOIN departments d ON e.department_id = d.id
        LEFT JOIN positions p ON e.position_id = p.id
+       LEFT JOIN companies c ON u.company_id = c.id
        WHERE u.id = ? AND u.is_deleted = 0`,
       [userId]
     );
@@ -187,6 +219,7 @@ const getCurrentUser = async (req, res) => {
       department: user.department_name,
       position_id: user.position_id,
       position: user.position_name,
+      company_name: user.company_name,
       created_at: user.created_at
     };
 

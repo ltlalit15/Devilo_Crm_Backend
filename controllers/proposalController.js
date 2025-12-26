@@ -99,11 +99,21 @@ const calculateTotals = (items, discount, discountType) => {
 const getAll = async (req, res) => {
   try {
     // Get filters from query params
-    const filterCompanyId = req.query.company_id || req.companyId;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
     const status = req.query.status;
     const search = req.query.search;
     const client_id = req.query.client_id;
     const project_id = req.query.project_id;
+    const lead_id = req.query.lead_id;
     const start_date = req.query.start_date;
     const end_date = req.query.end_date;
     const amount_min = req.query.amount_min;
@@ -113,18 +123,12 @@ const getAll = async (req, res) => {
     const sort_order = req.query.sort_order || 'DESC';
     
     // Filter proposals - include all estimates that are proposals
-    let whereClause = `WHERE e.is_deleted = 0 AND (
+    let whereClause = `WHERE e.company_id = ? AND e.is_deleted = 0 AND (
       e.estimate_number LIKE 'PROP#%' 
       OR e.estimate_number LIKE 'PROPOSAL%'
       OR e.estimate_number LIKE 'PROP-%'
     )`;
-    const params = [];
-    
-    if (filterCompanyId) {
-      const companyId = parseInt(filterCompanyId);
-      whereClause += ' AND e.company_id = ?';
-      params.push(companyId);
-    }
+    const params = [parseInt(filterCompanyId)];
     
     if (status && status !== 'All' && status !== 'all') {
       const statusUpper = status.toUpperCase();
@@ -142,6 +146,11 @@ const getAll = async (req, res) => {
       params.push(project_id);
     }
     
+    if (lead_id) {
+      whereClause += ' AND e.lead_id = ?';
+      params.push(parseInt(lead_id));
+    }
+    
     if (start_date) {
       whereClause += ' AND DATE(e.created_at) >= ?';
       params.push(start_date);
@@ -157,7 +166,7 @@ const getAll = async (req, res) => {
       params.push(parseFloat(amount_min));
     }
     
-    if (amount_max !== undefined) {
+    if (amount_max !== undefined && amount_max !== null && amount_max !== '') {
       whereClause += ' AND e.total <= ?';
       params.push(parseFloat(amount_max));
     }
@@ -165,6 +174,11 @@ const getAll = async (req, res) => {
     if (created_by) {
       whereClause += ' AND e.created_by = ?';
       params.push(created_by);
+    }
+    
+    if (lead_id) {
+      whereClause += ' AND e.lead_id = ?';
+      params.push(parseInt(lead_id));
     }
     
     // Search filter
@@ -198,7 +212,7 @@ const getAll = async (req, res) => {
       `SELECT e.*, 
        c.company_name as client_name, 
        c.id as client_id,
-       c.email as client_email,
+       u_client.email as client_email,
        p.project_name, 
        p.id as project_id,
        comp.name as company_name,
@@ -206,6 +220,7 @@ const getAll = async (req, res) => {
        u.name as created_by_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN users u_client ON c.owner_id = u_client.id
        LEFT JOIN projects p ON e.project_id = p.id
        LEFT JOIN companies comp ON e.company_id = comp.id
        LEFT JOIN users u ON e.created_by = u.id
@@ -654,9 +669,10 @@ const sendEmail = async (req, res) => {
 
     // Get proposal
     const [proposals] = await pool.execute(
-      `SELECT e.*, c.company_name as client_name, c.email as client_email, comp.name as company_name
+      `SELECT e.*, c.company_name as client_name, u_client.email as client_email, comp.name as company_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN users u_client ON c.owner_id = u_client.id
        LEFT JOIN companies comp ON e.company_id = comp.id
        WHERE e.id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.status IN ('Sent', 'Draft'))`,
       [id]
