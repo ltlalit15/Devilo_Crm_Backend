@@ -64,7 +64,7 @@ app.set('trust proxy', 1);
 // CORS
 app.use(cors({
   origin: [
-    process.env.FRONTEND_URL,       // future env based
+    process.env.FRONTEND_URL,       
     'http://localhost:5173',
     'https://crm-update.netlify.app'
   
