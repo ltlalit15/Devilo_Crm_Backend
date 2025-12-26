@@ -59,9 +59,6 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS
-app.set('trust proxy', 1);
-
-// CORS
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL,       

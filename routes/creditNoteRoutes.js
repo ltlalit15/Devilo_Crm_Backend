@@ -5,13 +5,13 @@
 const express = require('express');
 const router = express.Router();
 const creditNoteController = require('../controllers/creditNoteController');
-const { optionalAuth, requireRole } = require('../middleware/auth');
 
-router.get('/', optionalAuth, creditNoteController.getAll);
-router.get('/:id', optionalAuth, creditNoteController.getById);
-router.post('/', optionalAuth, requireRole(['ADMIN']), creditNoteController.create);
-router.put('/:id', optionalAuth, requireRole(['ADMIN']), creditNoteController.update);
-router.delete('/:id', optionalAuth, requireRole(['ADMIN']), creditNoteController.deleteCreditNote);
+// No authentication required - all routes are public
+router.get('/', creditNoteController.getAll);
+router.get('/:id', creditNoteController.getById);
+router.post('/', creditNoteController.create);
+router.put('/:id', creditNoteController.update);
+router.delete('/:id', creditNoteController.deleteCreditNote);
 
 module.exports = router;
 

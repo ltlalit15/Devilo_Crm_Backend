@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate invoice number
@@ -53,19 +52,19 @@ const calculateTotals = (items, discount, discountType) => {
 const getAll = async (req, res) => {
   try {
     const { status, client_id, search, start_date, end_date, project_id } = req.query;
+
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-
-    let whereClause = 'WHERE i.is_deleted = 0';
-    const params = [];
-
-    // Company filter
-    const filterCompanyId = req.query.company_id || req.companyId;
-    if (filterCompanyId) {
-      whereClause += ' AND i.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+
+    let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
+    const params = [filterCompanyId];
 
     // Status filter
     if (status && status !== 'All' && status !== 'all') {
@@ -102,16 +101,7 @@ const getAll = async (req, res) => {
       params.push(end_date);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM invoices i
-       LEFT JOIN clients c ON i.client_id = c.id
-       ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated invoices - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all invoices without pagination
     const [invoices] = await pool.execute(
       `SELECT i.*, 
        c.company_name as client_name, 
@@ -125,8 +115,7 @@ const getAll = async (req, res) => {
        LEFT JOIN payments pay ON pay.invoice_id = i.id AND pay.is_deleted = 0
        ${whereClause}
        GROUP BY i.id
-       ORDER BY i.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY i.created_at DESC`,
       params
     );
 
@@ -170,8 +159,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: invoices,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: invoices
     });
   } catch (error) {
     console.error('Get invoices error:', error);

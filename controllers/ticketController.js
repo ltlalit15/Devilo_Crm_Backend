@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateTicketId = async (companyId) => {
   const [result] = await pool.execute(`SELECT COUNT(*) as count FROM tickets WHERE company_id = ?`, [companyId]);
@@ -9,29 +8,26 @@ const generateTicketId = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    // No pagination - return all tickets
+    const companyId = req.query.company_id || req.body.company_id || 1;
     
-    const whereClause = 'WHERE company_id = ? AND is_deleted = 0';
-    const params = [req.companyId];
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM tickets ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
+    let whereClause = 'WHERE is_deleted = 0';
+    const params = [];
 
-    // Get paginated tickets - LIMIT and OFFSET as template literals (not placeholders)
+    // Add company_id filter only if provided
+    if (companyId) {
+      whereClause += ' AND company_id = ?';
+      params.push(companyId);
+    }
+
+    // Get all tickets without pagination
     const [tickets] = await pool.execute(
-      `SELECT * FROM tickets ${whereClause} ORDER BY created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+      `SELECT * FROM tickets ${whereClause} ORDER BY created_at DESC`,
       params
     );
     res.json({ 
       success: true, 
-      data: tickets,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: tickets
     });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch tickets' });
@@ -40,13 +36,15 @@ const getAll = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const ticket_id = await generateTicketId(req.companyId);
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    const userId = req.query.user_id || req.body.user_id || null;
+    const ticket_id = await generateTicketId(companyId);
     const { subject, client_id, priority, description, status, assigned_to_id } = req.body;
     const [result] = await pool.execute(
       `INSERT INTO tickets (company_id, ticket_id, subject, client_id, priority, description, status, assigned_to_id, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         ticket_id,
         subject,
         client_id ?? null,
@@ -54,7 +52,7 @@ const create = async (req, res) => {
         description ?? null,
         status || 'Open',
         assigned_to_id ?? null,
-        req.userId ?? null
+        userId
       ]
     );
     
@@ -83,11 +81,13 @@ const addComment = async (req, res) => {
   try {
     const { id } = req.params;
     const { comment, file_path } = req.body;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    const userId = req.query.user_id || req.body.user_id || null;
 
     // Check if ticket exists
     const [tickets] = await pool.execute(
-      `SELECT id FROM tickets WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      `SELECT id FROM tickets WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (tickets.length === 0) {
@@ -101,7 +101,7 @@ const addComment = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO ticket_comments (ticket_id, comment, file_path, created_by)
        VALUES (?, ?, ?, ?)`,
-      [id, comment, file_path ?? null, req.userId ?? null]
+      [id, comment, file_path ?? null, userId]
     );
 
     // Get created comment

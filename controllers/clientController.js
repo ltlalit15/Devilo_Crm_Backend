@@ -4,7 +4,6 @@
 
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all clients
@@ -13,12 +12,22 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 const getAll = async (req, res) => {
   try {
     const { status, search } = req.query;
+
+    // Admin must provide company_id - no default fallback
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    console.log('GET /clients - companyId:', companyId, 'query:', req.query, 'body:', req.body);
+    
+    if (!companyId) {
+      console.error('GET /clients - company_id is missing');
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
     if (status) {
       whereClause += ' AND c.status = ?';
@@ -30,26 +39,27 @@ const getAll = async (req, res) => {
       params.push(searchTerm, searchTerm);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM clients c ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated clients - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all clients without pagination
+    // Include email from users table (owner) since clients table doesn't have email directly
     const [clients] = await pool.execute(
-      `SELECT c.*, u.name as owner_name
+      `SELECT c.*, 
+              u.name as owner_name, 
+              u.email as email,
+              comp.name as admin_company_name
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
+       LEFT JOIN companies comp ON c.company_id = comp.id
        ${whereClause}
-       ORDER BY c.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY c.created_at DESC`,
       params
     );
 
     // Get contacts, groups, and labels for each client
+    // Map company_name to client_name for consistency
     for (let client of clients) {
+      // Map c.company_name (client's company name) to client_name
+      client.client_name = client.company_name;
+      
       const [contacts] = await pool.execute(
         `SELECT * FROM client_contacts WHERE client_id = ? AND is_deleted = 0`,
         [client.id]
@@ -71,8 +81,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: clients,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: clients
     });
   } catch (error) {
     console.error('Get clients error:', error);
@@ -91,12 +100,29 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    console.log('GET /clients/:id - id:', id, 'companyId:', companyId, 'query:', req.query, 'body:', req.body);
+    
+    if (!companyId) {
+      console.error('GET /clients/:id - company_id is missing for id:', id);
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    // Include email from users table (owner) since clients table doesn't have email directly
     const [clients] = await pool.execute(
-      `SELECT c.*, u.name as owner_name
+      `SELECT c.*, 
+              u.name as owner_name, 
+              u.email as email,
+              comp.name as admin_company_name
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
+       LEFT JOIN companies comp ON c.company_id = comp.id
        WHERE c.id = ? AND c.company_id = ? AND c.is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (clients.length === 0) {
@@ -107,6 +133,9 @@ const getById = async (req, res) => {
     }
 
     const client = clients[0];
+
+    // Map c.company_name (client's company name) to client_name
+    client.client_name = client.company_name;
 
     // Get contacts
     const [contacts] = await pool.execute(
@@ -152,25 +181,39 @@ const create = async (req, res) => {
   
   try {
     const {
-      company_name, email, password, address, city, state, zip,
+      client_name, company_name, email, password, address, city, state, zip,
       country, phone_country_code, phone_number, website, vat_number,
       gst_number, currency, currency_symbol, disable_online_payment,
       status, groups = [], labels = []
     } = req.body;
 
+    // Use client_name if provided, otherwise fallback to company_name for backward compatibility
+    const clientName = client_name || company_name;
+
     // Validation
-    if (!company_name || !email || !password) {
+    if (!clientName || !email || !password) {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        error: 'company_name, email, and password are required'
+        error: 'client_name, email, and password are required'
       });
     }
 
+    // Admin must provide company_id - required for filtering
+    const companyId = req.companyId || req.body.company_id || req.query.company_id;
+    
+    if (!companyId) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
     // Check if user already exists
     const [existingUsers] = await connection.execute(
       `SELECT id FROM users WHERE email = ? AND company_id = ?`,
-      [email, req.companyId]
+      [email, companyId]
     );
 
     if (existingUsers.length > 0) {
@@ -187,8 +230,8 @@ const create = async (req, res) => {
       `INSERT INTO users (company_id, name, email, password, role, status)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
-        company_name, // Use company name as user name
+        companyId,
+        clientName, // Use client name as user name
         email,
         hashedPassword,
         'CLIENT', // Auto-set role to CLIENT
@@ -206,7 +249,7 @@ const create = async (req, res) => {
         currency, currency_symbol, disable_online_payment, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId, company_name, ownerId, address, city, state, zip,
+        companyId, clientName, ownerId, address, city, state, zip,
         country || 'United States', phone_country_code || '+1', phone_number,
         website, vat_number, gst_number, currency || 'USD',
         currency_symbol || '$', disable_online_payment || 0, status || 'Active'
@@ -240,16 +283,42 @@ const create = async (req, res) => {
 
     // Get created client with user details (use pool after transaction is committed)
     const [clients] = await pool.execute(
-      `SELECT c.*, u.email, u.name as owner_name
+      `SELECT c.*, u.email, u.name as owner_name, comp.name as admin_company_name
        FROM clients c
        JOIN users u ON c.owner_id = u.id
+       LEFT JOIN companies comp ON c.company_id = comp.id
        WHERE c.id = ?`,
       [clientId]
     );
 
+    const client = clients[0];
+
+    // Map c.company_name (client's company name) to client_name
+    client.client_name = client.company_name;
+
+    // Get groups and labels for the created client (same as GET)
+    const [clientGroups] = await pool.execute(
+      `SELECT group_name FROM client_groups WHERE client_id = ?`,
+      [clientId]
+    );
+    client.groups = clientGroups.map(g => g.group_name);
+
+    const [clientLabels] = await pool.execute(
+      `SELECT label FROM client_labels WHERE client_id = ?`,
+      [clientId]
+    );
+    client.labels = clientLabels.map(l => l.label);
+
+    // Get contacts
+    const [contacts] = await pool.execute(
+      `SELECT * FROM client_contacts WHERE client_id = ? AND is_deleted = 0`,
+      [clientId]
+    );
+    client.contacts = contacts;
+
     res.status(201).json({
       success: true,
-      data: clients[0],
+      data: client,
       message: 'Client created successfully'
     });
   } catch (error) {
@@ -278,11 +347,18 @@ const update = async (req, res) => {
   try {
     const { id } = req.params;
     const updateFields = req.body;
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
+
+    // Handle client_name (map to company_name in database for backward compatibility)
+    if (updateFields.client_name !== undefined) {
+      updateFields.company_name = updateFields.client_name;
+      delete updateFields.client_name;
+    }
 
     // Check if client exists
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (clients.length === 0) {
@@ -311,7 +387,7 @@ const update = async (req, res) => {
 
     if (updates.length > 0) {
       updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(id, req.companyId);
+      values.push(id, companyId);
 
       await pool.execute(
         `UPDATE clients SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
@@ -371,10 +447,11 @@ const deleteClient = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.companyId || req.query.company_id || 1;
     const [result] = await pool.execute(
       `UPDATE clients SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (result.affectedRows === 0) {
@@ -414,10 +491,11 @@ const addContact = async (req, res) => {
       });
     }
 
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
     // Check if client exists
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (clients.length === 0) {
@@ -494,10 +572,11 @@ const updateContact = async (req, res) => {
     const { id, contactId } = req.params;
     const { name, job_title, email, phone, is_primary } = req.body;
 
+    const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
     // Check if client exists
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (clients.length === 0) {
@@ -596,10 +675,11 @@ const deleteContact = async (req, res) => {
   try {
     const { id, contactId } = req.params;
 
+    const companyId = req.companyId || req.query.company_id || 1;
     // Check if client exists
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (clients.length === 0) {
@@ -643,7 +723,7 @@ const deleteContact = async (req, res) => {
 const getOverview = async (req, res) => {
   try {
     const { date_range = 'all', start_date, end_date, status, owner_id } = req.query;
-    const companyId = req.companyId;
+    const companyId = req.companyId || req.query.company_id || 1;
 
     // Calculate date range
     let dateFilter = '';

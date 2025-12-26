@@ -1,15 +1,19 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
     const { year, month, start_date, end_date } = req.query;
+    const companyId = req.query.company_id || req.body.company_id || 1;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
-    let whereClause = 'WHERE e.company_id = ? AND e.is_deleted = 0';
-    const params = [req.companyId];
+    // No pagination - return all events
+    let whereClause = 'WHERE e.is_deleted = 0';
+    const params = [];
+
+    // Add company_id filter only if provided
+    if (companyId) {
+      whereClause += ' AND e.company_id = ?';
+      params.push(companyId);
+    }
 
     // Filter by year and month if provided
     if (year && month) {
@@ -41,14 +45,7 @@ const getAll = async (req, res) => {
     }
     */
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM events e ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated events - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all events without pagination
     const [events] = await pool.execute(
       `SELECT e.*, 
               u.name as host_name,
@@ -56,8 +53,7 @@ const getAll = async (req, res) => {
        FROM events e
        LEFT JOIN users u ON e.host_id = u.id
        ${whereClause}
-       ORDER BY e.starts_on_date ASC, e.starts_on_time ASC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY e.starts_on_date ASC, e.starts_on_time ASC`,
       params
     );
 
@@ -95,11 +91,10 @@ const getAll = async (req, res) => {
       event.clients = clients;
     }
 
-    console.log(`Fetched ${events.length} events for company ${req.companyId}, year ${year || 'all'}, month ${month || 'all'}`);
+    console.log(`Fetched ${events.length} events for company ${companyId}, year ${year || 'all'}, month ${month || 'all'}`);
     res.json({ 
       success: true, 
-      data: events,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: events
     });
   } catch (error) {
     console.error('Get events error:', error);
@@ -154,7 +149,9 @@ const create = async (req, res) => {
     const departments = department_ids || req.body.department || [];
     const employees = employee_ids || select_employee || [];
     const clients = client_ids || select_client || [];
-    const hostId = host_id || host || req.userId;
+    const userId = req.query.user_id || req.body.user_id || null;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    const hostId = host_id || host || userId;
     const eventStatus = status || 'Pending';
     const link = event_link || eventLink || null;
 
@@ -169,8 +166,8 @@ const create = async (req, res) => {
     // Validate host_id exists in users table
     if (hostId) {
       const [hostCheck] = await connection.execute(
-        `SELECT id FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-        [hostId, req.companyId]
+        `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+        [hostId]
       );
       if (hostCheck.length === 0) {
         await connection.rollback();
@@ -189,19 +186,19 @@ const create = async (req, res) => {
         host_id, status, event_link, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId,
+        companyId,
         eventName,
         labelColor,
-        location,
-        desc,
+        location || null,
+        desc || null,
         startDate,
         startTime,
         endDate,
         endTime,
         hostId || null,
         eventStatus,
-        link,
-        req.userId
+        link || null,
+        userId
       ]
     );
 
@@ -220,8 +217,8 @@ const create = async (req, res) => {
     // Insert employees - always add the creator if they're an employee
     const employeesToAdd = [...new Set(employees && employees.length > 0 ? employees : [])];
     // If creator is employee and not already in list, add them
-    if (req.user.role === 'EMPLOYEE' && !employeesToAdd.includes(req.userId)) {
-      employeesToAdd.push(req.userId);
+    if (userId && !employeesToAdd.includes(userId)) {
+      employeesToAdd.push(userId);
     }
     
     if (employeesToAdd.length > 0) {

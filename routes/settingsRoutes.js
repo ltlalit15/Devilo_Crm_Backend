@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const settingsController = require('../controllers/settingsController');
-const { optionalAuth, requireRole } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -56,18 +55,14 @@ const optionalUpload = (req, res, next) => {
   }
 };
 
-// GET routes don't require token - faster API calls
-router.get('/', optionalAuth, settingsController.get);
-router.get('/category/:category', optionalAuth, settingsController.getByCategory);
+// No authentication required - all routes are public
+router.get('/', settingsController.get);
+router.get('/category/:category', settingsController.getByCategory);
 router.put('/', 
-  optionalAuth, 
-  requireRole(['ADMIN']), 
   optionalUpload,
   settingsController.update
 );
 router.put('/bulk', 
-  optionalAuth, 
-  requireRole(['ADMIN']), 
   settingsController.bulkUpdate
 );
 

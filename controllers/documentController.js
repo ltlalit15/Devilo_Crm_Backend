@@ -1,7 +1,6 @@
 const pool = require('../config/db');
 const path = require('path');
 const fs = require('fs');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all documents for current user
@@ -11,19 +10,16 @@ const getAll = async (req, res) => {
   try {
     const { category } = req.query;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    const userId = req.query.user_id || req.body.user_id || null;
 
     let whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
-    // For employees, only show their own documents
-    if (req.user.role === 'EMPLOYEE') {
+    // For employees/clients, only show their own documents
+    if (userId) {
       whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
-    } else if (req.user.role === 'CLIENT') {
-      whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
+      params.push(userId);
     }
     // Admin can see all company documents
 
@@ -32,21 +28,13 @@ const getAll = async (req, res) => {
       params.push(category);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM documents d ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated documents - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all documents without pagination
     const [documents] = await pool.execute(
       `SELECT d.*, u.name as user_name
        FROM documents d
        LEFT JOIN users u ON d.user_id = u.id
        ${whereClause}
-       ORDER BY d.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY d.created_at DESC`,
       params
     );
 
@@ -59,8 +47,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: formattedDocuments,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: formattedDocuments
     });
   } catch (error) {
     console.error('Get documents error:', error);
@@ -79,13 +66,17 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
+    const userId = req.query.user_id || req.body.user_id || req.userId || null;
+    const userRole = req.query.role || req.body.role || req.user?.role || null;
+
     let whereClause = 'WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0';
-    const params = [id, req.companyId];
+    const params = [id, companyId];
 
     // For employees/clients, only allow access to their own documents
-    if (req.user.role === 'EMPLOYEE' || req.user.role === 'CLIENT') {
+    if ((userRole === 'EMPLOYEE' || userRole === 'CLIENT') && userId) {
       whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
+      params.push(userId);
     }
 
     const [documents] = await pool.execute(
@@ -127,7 +118,7 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
-    const { title, category, description } = req.body;
+    const { title, category, description, company_id, user_id } = req.body;
     const file = req.file;
 
     if (!file) {
@@ -144,6 +135,9 @@ const create = async (req, res) => {
       });
     }
 
+    const companyId = company_id || req.query.company_id || req.body.company_id || req.companyId || 1;
+    const userId = user_id || req.query.user_id || req.body.user_id || req.userId || null;
+
     // Get file info
     const filePath = file.path;
     const fileName = file.originalname;
@@ -155,8 +149,8 @@ const create = async (req, res) => {
         company_id, user_id, title, category, file_path, file_name, file_size, file_type, description
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId,
-        req.userId, // Current user's documents
+        companyId,
+        userId, // Current user's documents
         title,
         category || null,
         filePath,
@@ -202,14 +196,18 @@ const deleteDocument = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
+    const userId = req.query.user_id || req.body.user_id || req.userId || null;
+    const userRole = req.query.role || req.body.role || req.user?.role || null;
+
     // Get document first to check permissions and file path
     let whereClause = 'WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0';
-    const params = [id, req.companyId];
+    const params = [id, companyId];
 
     // For employees/clients, only allow deletion of their own documents
-    if (req.user.role === 'EMPLOYEE' || req.user.role === 'CLIENT') {
+    if ((userRole === 'EMPLOYEE' || userRole === 'CLIENT') && userId) {
       whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
+      params.push(userId);
     }
 
     const [documents] = await pool.execute(
@@ -263,13 +261,17 @@ const download = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
+    const userId = req.query.user_id || req.body.user_id || req.userId || null;
+    const userRole = req.query.role || req.body.role || req.user?.role || null;
+
     let whereClause = 'WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0';
-    const params = [id, req.companyId];
+    const params = [id, companyId];
 
     // For employees/clients, only allow download of their own documents
-    if (req.user.role === 'EMPLOYEE' || req.user.role === 'CLIENT') {
+    if ((userRole === 'EMPLOYEE' || userRole === 'CLIENT') && userId) {
       whereClause += ' AND d.user_id = ?';
-      params.push(req.userId);
+      params.push(userId);
     }
 
     const [documents] = await pool.execute(
@@ -286,6 +288,13 @@ const download = async (req, res) => {
 
     const doc = documents[0];
 
+    if (!doc.file_path) {
+      return res.status(404).json({
+        success: false,
+        error: 'File path not found'
+      });
+    }
+
     if (!fs.existsSync(doc.file_path)) {
       return res.status(404).json({
         success: false,
@@ -293,12 +302,16 @@ const download = async (req, res) => {
       });
     }
 
-    res.download(doc.file_path, doc.file_name);
+    res.download(doc.file_path, doc.file_name || doc.file_name || 'document');
   } catch (error) {
     console.error('Download document error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to download document'
+      error: error.message || 'Failed to download document'
     });
   }
 };

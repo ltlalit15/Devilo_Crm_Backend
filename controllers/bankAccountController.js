@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all bank accounts
@@ -11,39 +10,32 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const filterCompanyId = req.query.company_id || req.companyId;
-
-    let whereClause = 'WHERE ba.is_deleted = 0';
-    const params = [];
-
-    if (filterCompanyId) {
-      whereClause += ' AND ba.company_id = ?';
-      params.push(filterCompanyId);
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Company ID is required'
+      });
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM bank_accounts ba ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
+    let whereClause = 'WHERE ba.company_id = ? AND ba.is_deleted = 0';
+    const params = [filterCompanyId];
 
-    // Get paginated bank accounts
+    // Get all bank accounts without pagination
     const [accounts] = await pool.execute(
       `SELECT ba.*, c.name as company_name
        FROM bank_accounts ba
        LEFT JOIN companies c ON ba.company_id = c.id
        ${whereClause}
-       ORDER BY ba.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ba.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: accounts,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: accounts
     });
   } catch (error) {
     console.error('Get bank accounts error:', error);
@@ -61,15 +53,18 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-    const filterCompanyId = req.query.company_id || req.companyId;
-
-    let whereClause = 'WHERE ba.id = ? AND ba.is_deleted = 0';
-    const params = [id];
-
-    if (filterCompanyId) {
-      whereClause += ' AND ba.company_id = ?';
-      params.push(filterCompanyId);
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Company ID is required'
+      });
     }
+
+    let whereClause = 'WHERE ba.id = ? AND ba.company_id = ? AND ba.is_deleted = 0';
+    const params = [id, filterCompanyId];
 
     const [accounts] = await pool.execute(
       `SELECT ba.*, c.name as company_name

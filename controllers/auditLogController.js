@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all audit logs
@@ -11,14 +10,15 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const filterCompanyId = req.query.company_id || req.companyId;
+    // No pagination - return all audit logs
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const action = req.query.action;
     const user_id = req.query.user_id;
     const start_date = req.query.start_date;
     const end_date = req.query.end_date;
 
-    let whereClause = 'WHERE al.is_deleted = 0';
+    // Remove is_deleted check - column doesn't exist in audit_logs table
+    let whereClause = 'WHERE 1=1';
     const params = [];
 
     if (filterCompanyId) {
@@ -46,29 +46,20 @@ const getAll = async (req, res) => {
       params.push(end_date);
     }
 
-    // Get total count
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM audit_logs al ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated audit logs
+    // Get all audit logs without pagination
     const [logs] = await pool.execute(
       `SELECT al.*, u.name as user_name, u.email as user_email, c.name as company_name
        FROM audit_logs al
        LEFT JOIN users u ON al.user_id = u.id
        LEFT JOIN companies c ON al.company_id = c.id
        ${whereClause}
-       ORDER BY al.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY al.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: logs,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: logs
     });
   } catch (error) {
     console.error('Get audit logs error:', error);
@@ -86,9 +77,10 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
 
-    let whereClause = 'WHERE al.id = ? AND al.is_deleted = 0';
+    // Remove is_deleted check - column doesn't exist in audit_logs table
+    let whereClause = 'WHERE al.id = ?';
     const params = [id];
 
     if (filterCompanyId) {
@@ -149,8 +141,8 @@ const create = async (req, res) => {
       });
     }
 
-    const companyId = req.body.company_id || req.companyId;
-    const userId = req.body.user_id || req.userId;
+    const companyId = req.body.company_id || req.query.company_id || 1;
+    const userId = req.body.user_id || req.query.user_id || null;
 
     const [result] = await pool.execute(
       `INSERT INTO audit_logs (

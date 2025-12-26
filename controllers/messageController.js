@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all messages/conversations
@@ -11,9 +10,8 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const userId = req.userId;
-    const companyId = req.companyId;
+    const userId = req.query.user_id || req.body.user_id || null;
+    const companyId = req.query.company_id || req.body.company_id || 1;
     const conversationWith = req.query.conversation_with; // User ID to get conversation with
 
     if (conversationWith) {
@@ -31,25 +29,13 @@ const getAll = async (req, res) => {
            AND m.is_deleted = 0
            AND ((m.from_user_id = ? AND m.to_user_id = ?) 
                 OR (m.from_user_id = ? AND m.to_user_id = ?))
-         ORDER BY m.created_at ASC
-         LIMIT ${limit} OFFSET ${offset}`,
-        [companyId, userId, conversationWith, conversationWith, userId]
-      );
-
-      const [countResult] = await pool.execute(
-        `SELECT COUNT(*) as total 
-         FROM messages m
-         WHERE m.company_id = ? 
-           AND m.is_deleted = 0
-           AND ((m.from_user_id = ? AND m.to_user_id = ?) 
-                OR (m.from_user_id = ? AND m.to_user_id = ?))`,
+         ORDER BY m.created_at ASC`,
         [companyId, userId, conversationWith, conversationWith, userId]
       );
 
       return res.json({
         success: true,
-        data: messages,
-        pagination: getPaginationMeta(countResult[0].total, page, pageSize)
+        data: messages
       });
     }
 
@@ -78,28 +64,13 @@ const getAll = async (req, res) => {
          AND m.is_deleted = 0
          AND (m.from_user_id = ? OR m.to_user_id = ?)
        GROUP BY other_user_id, other_user_name, other_user_email, last_message, last_message_time
-       ORDER BY last_message_time DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY last_message_time DESC`,
       [userId, userId, userId, userId, companyId, userId, userId]
-    );
-
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(DISTINCT 
-         CASE 
-           WHEN m.from_user_id = ? THEN m.to_user_id
-           ELSE m.from_user_id
-         END) as total
-       FROM messages m
-       WHERE m.company_id = ? 
-         AND m.is_deleted = 0
-         AND (m.from_user_id = ? OR m.to_user_id = ?)`,
-      [userId, companyId, userId, userId]
     );
 
     res.json({
       success: true,
       data: conversations,
-      pagination: getPaginationMeta(countResult[0].total, page, pageSize)
     });
   } catch (error) {
     console.error('Get messages error:', error);

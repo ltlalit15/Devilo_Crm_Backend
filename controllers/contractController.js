@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const generateContractNumber = async (companyId) => {
   const [result] = await pool.execute(`SELECT COUNT(*) as count FROM contracts WHERE company_id = ?`, [companyId]);
@@ -9,51 +8,44 @@ const generateContractNumber = async (companyId) => {
 
 const getAll = async (req, res) => {
   try {
-    const { status, company_id } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const { status, lead_id } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all contracts by default
-    const filterCompanyId = company_id || req.companyId;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE c.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param or req.companyId exists
-    if (filterCompanyId) {
-      whereClause += ' AND c.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
+    const params = [filterCompanyId];
 
     if (status) {
       whereClause += ' AND c.status = ?';
       params.push(status);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM contracts c ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
+    if (lead_id) {
+      whereClause += ' AND c.lead_id = ?';
+      params.push(parseInt(lead_id));
+    }
 
-    // Get paginated contracts - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all contracts without pagination
     const [contracts] = await pool.execute(
       `SELECT c.*, cl.company_name as client_name
        FROM contracts c
        LEFT JOIN clients cl ON c.client_id = cl.id
        ${whereClause}
-       ORDER BY c.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY c.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: contracts,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: contracts
     });
   } catch (error) {
     console.error('Get contracts error:', error);

@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all projects
@@ -31,21 +30,19 @@ const getAll = async (req, res) => {
       progress_min,
       progress_max
     } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
-    // Only filter by company_id if explicitly provided in query params
-    const filterCompanyId = company_id || req.companyId;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = company_id || req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE p.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param
-    if (filterCompanyId) {
-      whereClause += ' AND p.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
+    const params = [filterCompanyId];
 
     // Status filter
     if (status && status !== 'All Projects' && status !== 'all') {
@@ -143,17 +140,7 @@ const getAll = async (req, res) => {
     const sortColumn = allowedSortColumns[sort_by] || 'p.created_at';
     const sortDirection = (sort_order || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM projects p
-       LEFT JOIN clients c ON p.client_id = c.id
-       LEFT JOIN companies comp ON p.company_id = comp.id
-       ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated projects with joins - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all projects without pagination
     const [projects] = await pool.execute(
       `SELECT p.*, 
               c.company_name as client_name,
@@ -167,8 +154,7 @@ const getAll = async (req, res) => {
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
        ${whereClause}
-       ORDER BY ${sortColumn} ${sortDirection}
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY ${sortColumn} ${sortDirection}`,
       params
     );
 
@@ -185,8 +171,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: projects,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: projects
     });
   } catch (error) {
     console.error('Get projects error:', error);
@@ -204,6 +189,16 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     const [projects] = await pool.execute(
       `SELECT p.*, 
@@ -216,8 +211,8 @@ const getById = async (req, res) => {
        LEFT JOIN companies comp ON p.company_id = comp.id
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
-       WHERE p.id = ? AND p.is_deleted = 0`,
-      [id]
+       WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
+      [id, companyId]
     );
 
     if (projects.length === 0) {

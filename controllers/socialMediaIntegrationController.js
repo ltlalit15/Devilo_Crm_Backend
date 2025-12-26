@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 const crypto = require('crypto');
 
 // Encryption key (should be in environment variables in production)
@@ -39,11 +38,8 @@ const decrypt = (encryptedText) => {
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    
     // Only filter by company_id if explicitly provided in query params or req.companyId exists
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     
     let whereClause = 'WHERE s.is_deleted = 0';
     const params = [];
@@ -64,15 +60,8 @@ const getAll = async (req, res) => {
       whereClause += ' AND s.status = ?';
       params.push(req.query.status);
     }
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM social_media_integrations s ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
 
-    // Get paginated integrations
+    // Get all integrations without pagination
     const [integrations] = await pool.execute(
       `SELECT 
         s.id,
@@ -95,8 +84,7 @@ const getAll = async (req, res) => {
        LEFT JOIN users u ON s.auto_assign_to = u.id
        LEFT JOIN companies comp ON s.company_id = comp.id
        ${whereClause}
-       ORDER BY s.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY s.created_at DESC`,
       params
     );
 
@@ -109,8 +97,7 @@ const getAll = async (req, res) => {
 
     res.json({ 
       success: true, 
-      data: sanitizedIntegrations,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: sanitizedIntegrations
     });
   } catch (error) {
     console.error('Get social media integrations error:', error);

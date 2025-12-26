@@ -10,6 +10,7 @@ const pool = require('../config/db');
  */
 const getAdminDashboard = async (req, res) => {
   try {
+    const companyId = req.query.company_id || req.body.company_id || 1;
     // Parallelize all database queries for better performance
     const [
       [leadsCount],
@@ -22,15 +23,15 @@ const getAdminDashboard = async (req, res) => {
     ] = await Promise.all([
       pool.execute(
         `SELECT COUNT(*) as total FROM leads WHERE company_id = ? AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM clients WHERE company_id = ? AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM users WHERE company_id = ? AND role = 'EMPLOYEE' AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM companies WHERE is_deleted = 0`,
@@ -38,16 +39,16 @@ const getAdminDashboard = async (req, res) => {
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM projects WHERE company_id = ? AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total, SUM(total) as total_amount, SUM(paid) as paid_amount, SUM(unpaid) as unpaid_amount
          FROM invoices WHERE company_id = ? AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM tasks WHERE company_id = ? AND is_deleted = 0`,
-        [req.companyId]
+        [companyId]
       )
     ]);
 
@@ -83,7 +84,8 @@ const getAdminDashboard = async (req, res) => {
  */
 const getEmployeeDashboard = async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.query.user_id || req.body.user_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || 1;
     const today = new Date().toISOString().split('T')[0];
 
     // Parallelize all database queries for better performance
@@ -97,24 +99,24 @@ const getEmployeeDashboard = async (req, res) => {
         `SELECT COUNT(*) as total FROM tasks t
          JOIN task_assignees ta ON t.id = ta.task_id
          WHERE ta.user_id = ? AND t.company_id = ? AND t.is_deleted = 0`,
-        [userId, req.companyId]
+        [userId, companyId]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM projects p
          JOIN project_members pm ON p.id = pm.project_id
          WHERE pm.user_id = ? AND p.company_id = ? AND p.is_deleted = 0`,
-        [userId, req.companyId]
+        [userId, companyId]
       ),
       pool.execute(
         `SELECT SUM(hours) as total_hours FROM time_logs
          WHERE user_id = ? AND company_id = ? AND date = ? AND is_deleted = 0`,
-        [userId, req.companyId, today]
+        [userId, companyId, today]
       ),
       pool.execute(
         `SELECT COUNT(*) as total FROM events e
          JOIN event_employees ee ON e.id = ee.event_id
          WHERE ee.user_id = ? AND e.company_id = ? AND e.starts_on_date >= ? AND e.is_deleted = 0`,
-        [userId, req.companyId, today]
+        [userId, companyId, today]
       )
     ]);
 
@@ -142,12 +144,13 @@ const getEmployeeDashboard = async (req, res) => {
  */
 const getClientDashboard = async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.query.user_id || req.body.user_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     // Get client ID from user
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
-      [userId, req.companyId]
+      [userId, companyId]
     );
 
     if (clients.length === 0) {
@@ -245,12 +248,13 @@ const getClientDashboard = async (req, res) => {
  */
 const getClientWork = async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.query.user_id || req.body.user_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     // Get client ID from user
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
-      [userId, req.companyId]
+      [userId, companyId]
     );
 
     if (clients.length === 0) {
@@ -314,12 +318,13 @@ const getClientWork = async (req, res) => {
  */
 const getClientFinance = async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.query.user_id || req.body.user_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     // Get client ID from user
     const [clients] = await pool.execute(
       `SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
-      [userId, req.companyId]
+      [userId, companyId]
     );
 
     if (clients.length === 0) {

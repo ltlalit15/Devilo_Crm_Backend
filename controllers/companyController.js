@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all companies
@@ -16,9 +15,6 @@ const getAll = async (req, res) => {
     // For regular admin, they see only their company
     
     const { search } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE is_deleted = 0';
     const params = [];
@@ -32,26 +28,17 @@ const getAll = async (req, res) => {
       params.push(`%${search}%`);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM companies ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated companies - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all companies without pagination
     const [companies] = await pool.execute(
       `SELECT * FROM companies 
        ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: companies,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: companies
     });
   } catch (error) {
     console.error('Get companies error:', error);

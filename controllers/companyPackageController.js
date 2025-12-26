@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all company packages
@@ -11,35 +10,19 @@ const { parsePagination, getPaginationMeta } = require('../utils/pagination');
  */
 const getAll = async (req, res) => {
   try {
-    // Check if companyId exists
-    if (!req.companyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Company ID is required. Please ensure you are logged in with a valid company account.'
-      });
-    }
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     const { status } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     let whereClause = 'WHERE cp.company_id = ? AND cp.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
     if (status) {
       whereClause += ' AND cp.status = ?';
       params.push(status);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM company_packages cp ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated packages with assigned companies count and names
+    // Get all packages without pagination
     const [packages] = await pool.execute(
       `SELECT cp.*,
               COUNT(DISTINCT c.id) as companies_count,
@@ -49,8 +32,7 @@ const getAll = async (req, res) => {
        LEFT JOIN companies c ON c.package_id = cp.id AND c.is_deleted = 0
        ${whereClause}
        GROUP BY cp.id
-       ORDER BY cp.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY cp.created_at DESC`,
       params
     );
 
@@ -114,8 +96,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: packagesWithFeatures,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: packagesWithFeatures
     });
   } catch (error) {
     console.error('Get company packages error:', error);

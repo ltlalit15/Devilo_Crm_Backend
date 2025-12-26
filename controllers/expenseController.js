@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate expense number
@@ -44,12 +43,9 @@ const calculateTotals = (items, discount, discountType) => {
 const getAll = async (req, res) => {
   try {
     const { status } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
 
     // Only filter by company_id if explicitly provided in query params or req.companyId exists
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     
     let whereClause = 'WHERE e.is_deleted = 0';
     const params = [];
@@ -64,19 +60,11 @@ const getAll = async (req, res) => {
       params.push(status);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM expenses e ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated expenses - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all expenses without pagination
     const [expenses] = await pool.execute(
       `SELECT e.* FROM expenses e
        ${whereClause}
-       ORDER BY e.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY e.created_at DESC`,
       params
     );
 
@@ -91,8 +79,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: expenses,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: expenses
     });
   } catch (error) {
     console.error('Get expenses error:', error);
