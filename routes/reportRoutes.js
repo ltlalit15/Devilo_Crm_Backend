@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const reportController = require('../controllers/reportController');
-const { optionalAuth } = require('../middleware/auth');
 
-// GET routes don't require token - faster API calls
-router.get('/sales', optionalAuth, reportController.getSalesReport);
-router.get('/revenue', optionalAuth, reportController.getRevenueReport);
-router.get('/projects', optionalAuth, reportController.getProjectStatusReport);
-router.get('/employees', optionalAuth, reportController.getEmployeePerformanceReport);
-router.get('/summary', optionalAuth, reportController.getReportsSummary);
+// No authentication required - all routes are public
+router.get('/sales', reportController.getSalesReport);
+router.get('/revenue', reportController.getRevenueReport);
+router.get('/projects', reportController.getProjectStatusReport);
+router.get('/employees', reportController.getEmployeePerformanceReport);
+router.get('/summary', reportController.getReportsSummary);
 
 module.exports = router;
 

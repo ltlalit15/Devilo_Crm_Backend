@@ -1,34 +1,23 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 const getAll = async (req, res) => {
   try {
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const companyId = req.query.company_id || req.body.company_id || 1;
     
     const whereClause = 'WHERE company_id = ? AND is_deleted = 0';
-    const params = [req.companyId];
-    
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM users ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
+    const params = [companyId];
 
-    // Get paginated users - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all users without pagination
     const [users] = await pool.execute(
       `SELECT id, company_id, name, email, role, status FROM users
        ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY created_at DESC`,
       params
     );
     res.json({ 
       success: true, 
-      data: users,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: users
     });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch users' });

@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate unique credit note number
@@ -65,8 +64,7 @@ const generateCreditNoteNumber = async (companyId) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
-    const filterCompanyId = req.query.company_id || req.companyId;
+    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
     const status = req.query.status;
     const invoiceId = req.query.invoice_id;
     const clientId = req.query.client_id;
@@ -94,15 +92,6 @@ const getAll = async (req, res) => {
       params.push(clientId);
     }
 
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total 
-       FROM credit_notes cn
-       LEFT JOIN invoices i ON cn.invoice_id = i.id
-       ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
     const [creditNotes] = await pool.execute(
       `SELECT cn.*, 
               i.invoice_number,
@@ -114,15 +103,13 @@ const getAll = async (req, res) => {
        LEFT JOIN clients c ON i.client_id = c.id
        LEFT JOIN users u ON cn.created_by = u.id
        ${whereClause}
-       ORDER BY cn.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY cn.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: creditNotes,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: creditNotes
     });
   } catch (error) {
     console.error('Get credit notes error:', error);

@@ -5,14 +5,16 @@
 const express = require('express');
 const router = express.Router();
 const projectController = require('../controllers/projectController');
-const { optionalAuth, requireRole } = require('../middleware/auth');
+const { uploadMultiple, handleUploadError } = require('../middleware/upload');
 
-// GET routes don't require token - faster API calls
-router.get('/', optionalAuth, projectController.getAll);
-router.get('/:id', optionalAuth, projectController.getById);
-router.post('/', optionalAuth, requireRole(['ADMIN']), projectController.create);
-router.put('/:id', optionalAuth, requireRole(['ADMIN']), projectController.update);
-router.delete('/:id', optionalAuth, requireRole(['ADMIN']), projectController.delete);
+// No authentication required - all routes are public
+router.get('/filters', projectController.getFilters);
+router.get('/', projectController.getAll);
+router.get('/:id', projectController.getById);
+router.post('/', projectController.create);
+router.post('/:id/upload', uploadMultiple('file', 10), handleUploadError, projectController.uploadFile);
+router.put('/:id', projectController.update);
+router.delete('/:id', projectController.delete);
 
 module.exports = router;
 

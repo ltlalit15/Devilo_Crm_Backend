@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Get all payments
@@ -13,11 +12,18 @@ const getAll = async (req, res) => {
   try {
     const { client_id, invoice_id } = req.query;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    // Admin must provide company_id - required for filtering
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     let whereClause = 'WHERE p.company_id = ? AND p.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [companyId];
 
     if (client_id) {
       whereClause += ` AND p.invoice_id IN (
@@ -30,14 +36,7 @@ const getAll = async (req, res) => {
       params.push(invoice_id);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM payments p ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated payments - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all payments without pagination
     const [payments] = await pool.execute(
       `SELECT p.*, i.invoice_number, c.company_name as client_name, comp.name as company_name
        FROM payments p
@@ -45,15 +44,13 @@ const getAll = async (req, res) => {
        LEFT JOIN clients c ON i.client_id = c.id
        LEFT JOIN companies comp ON p.company_id = comp.id
        ${whereClause}
-       ORDER BY p.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY p.created_at DESC`,
       params
     );
 
     res.json({
       success: true,
-      data: payments,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: payments
     });
   } catch (error) {
     console.error('Get payments error:', error);
@@ -71,14 +68,15 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
 
     const [payments] = await pool.execute(
       `SELECT p.*, i.invoice_number, c.company_name as client_name
        FROM payments p
        LEFT JOIN invoices i ON p.invoice_id = i.id
        LEFT JOIN clients c ON i.client_id = c.id
-       WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
-      [id, req.companyId]
+       WHERE p.id = ? AND p.is_deleted = 0`,
+      [id]
     );
 
     if (payments.length === 0) {
@@ -129,7 +127,7 @@ const create = async (req, res) => {
         bank_account, receipt_path, remark, order_number, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id ?? req.companyId ?? null,
+        company_id ?? null,
         project_id ?? null,
         invoice_id,
         paid_on,
@@ -144,7 +142,7 @@ const create = async (req, res) => {
         remark ?? null,
         order_number ?? null,
         'Complete',
-        req.userId ?? null
+        req.body.user_id || req.query.user_id || null
       ]
     );
 
@@ -196,7 +194,7 @@ const createBulk = async (req, res) => {
 
     for (const payment of payments) {
       const {
-        invoice_id, payment_date, payment_method, offline_payment_method,
+        company_id, invoice_id, payment_date, payment_method, offline_payment_method,
         bank_account, transaction_id, amount_received
       } = payment;
 
@@ -212,7 +210,7 @@ const createBulk = async (req, res) => {
           status, created_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          req.companyId ?? null,
+          company_id ?? null,
           invoice_id,
           payment_date,
           amount_received,
@@ -223,7 +221,7 @@ const createBulk = async (req, res) => {
           offline_payment_method ?? null,
           bank_account ?? null,
           'Complete',
-          req.userId ?? null
+          req.body.user_id || req.query.user_id || null
         ]
       );
 
@@ -268,10 +266,11 @@ const update = async (req, res) => {
     const { id } = req.params;
     const updateFields = req.body;
 
+    const companyId = req.query.company_id || req.body.company_id || 1;
     // Get payment to get invoice_id
     const [payments] = await pool.execute(
-      `SELECT invoice_id, amount FROM payments WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      `SELECT invoice_id, amount FROM payments WHERE id = ?`,
+      [id]
     );
 
     if (payments.length === 0) {
@@ -303,10 +302,10 @@ const update = async (req, res) => {
 
     if (updates.length > 0) {
       updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(id, req.companyId);
+      values.push(id);
 
       await pool.execute(
-        `UPDATE payments SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+        `UPDATE payments SET ${updates.join(', ')} WHERE id = ?`,
         values
       );
 
@@ -345,10 +344,11 @@ const deletePayment = async (req, res) => {
   try {
     const { id } = req.params;
 
+    const companyId = req.query.company_id || req.body.company_id || 1;
     // Get payment
     const [payments] = await pool.execute(
-      `SELECT invoice_id, amount FROM payments WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      `SELECT invoice_id, amount FROM payments WHERE id = ?`,
+      [id]
     );
 
     if (payments.length === 0) {
@@ -363,8 +363,8 @@ const deletePayment = async (req, res) => {
     // Delete payment
     await pool.execute(
       `UPDATE payments SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+       WHERE id = ?`,
+      [id]
     );
 
     // Update invoice

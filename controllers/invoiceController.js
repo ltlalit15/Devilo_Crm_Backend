@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate invoice number
@@ -52,56 +51,115 @@ const calculateTotals = (items, discount, discountType) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { status, client_id } = req.query;
+    const { status, client_id, search, start_date, end_date, project_id } = req.query;
+
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
 
     let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
-    const params = [req.companyId];
+    const params = [filterCompanyId];
 
-    if (status) {
-      whereClause += ' AND i.status = ?';
+    // Status filter
+    if (status && status !== 'All' && status !== 'all') {
+      whereClause += ' AND UPPER(i.status) = UPPER(?)';
       params.push(status);
     }
+    
+    // Client filter
     if (client_id) {
       whereClause += ' AND i.client_id = ?';
       params.push(client_id);
     }
+    
+    // Project filter
+    if (project_id) {
+      whereClause += ' AND i.project_id = ?';
+      params.push(project_id);
+    }
+    
+    // Search filter (invoice number or client name)
+    if (search) {
+      whereClause += ' AND (i.invoice_number LIKE ? OR c.company_name LIKE ?)';
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern);
+    }
+    
+    // Date range filter
+    if (start_date) {
+      whereClause += ' AND DATE(i.bill_date) >= ?';
+      params.push(start_date);
+    }
+    if (end_date) {
+      whereClause += ' AND DATE(i.bill_date) <= ?';
+      params.push(end_date);
+    }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM invoices i ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated invoices - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all invoices without pagination
     const [invoices] = await pool.execute(
-      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
+      `SELECT i.*, 
+       c.company_name as client_name, 
+       comp.name as company_name, 
+       p.project_name,
+       COALESCE(SUM(pay.amount), 0) as paid_amount
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
        LEFT JOIN companies comp ON i.company_id = comp.id
        LEFT JOIN projects p ON i.project_id = p.id
+       LEFT JOIN payments pay ON pay.invoice_id = i.id AND pay.is_deleted = 0
        ${whereClause}
-       ORDER BY i.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       GROUP BY i.id
+       ORDER BY i.created_at DESC`,
       params
     );
 
-    // Get items for each invoice
+    // Get items and calculate totals for each invoice
     for (let invoice of invoices) {
       const [items] = await pool.execute(
         `SELECT * FROM invoice_items WHERE invoice_id = ?`,
         [invoice.id]
       );
-      invoice.items = items;
+      invoice.items = items || [];
+      
+      // Calculate paid amount from payments
+      const paidAmount = parseFloat(invoice.paid_amount || 0);
+      const totalAmount = parseFloat(invoice.total || 0);
+      const dueAmount = totalAmount - paidAmount;
+      
+      invoice.paid_amount = paidAmount;
+      invoice.due_amount = dueAmount;
+      invoice.bill_date = invoice.bill_date || invoice.invoice_date || invoice.created_at;
+      
+      // Determine status based on payments
+      if (!invoice.status || invoice.status === 'Draft') {
+        invoice.status = 'Draft';
+      } else if (paidAmount === 0) {
+        invoice.status = 'Unpaid';
+      } else if (paidAmount >= totalAmount) {
+        invoice.status = 'Fully Paid';
+      } else if (paidAmount > 0) {
+        invoice.status = 'Partially Paid';
+      }
+      
+      // Check for credit notes
+      const [creditNotes] = await pool.execute(
+        `SELECT SUM(amount) as total_credit FROM credit_notes WHERE invoice_id = ? AND is_deleted = 0`,
+        [invoice.id]
+      );
+      if (creditNotes[0]?.total_credit > 0) {
+        invoice.status = 'Credited';
+      }
     }
 
     res.json({
       success: true,
-      data: invoices,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: invoices
     });
   } catch (error) {
     console.error('Get invoices error:', error);
@@ -119,15 +177,22 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
+    const filterCompanyId = req.query.company_id || req.companyId;
 
     const [invoices] = await pool.execute(
-      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
+      `SELECT i.*, 
+       c.company_name as client_name, 
+       comp.name as company_name, 
+       p.project_name,
+       COALESCE(SUM(pay.amount), 0) as paid_amount
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
        LEFT JOIN companies comp ON i.company_id = comp.id
        LEFT JOIN projects p ON i.project_id = p.id
-       WHERE i.id = ? AND i.company_id = ? AND i.is_deleted = 0`,
-      [id, req.companyId]
+       LEFT JOIN payments pay ON pay.invoice_id = i.id AND pay.is_deleted = 0
+       WHERE i.id = ? AND i.is_deleted = 0
+       GROUP BY i.id`,
+      [id]
     );
 
     if (invoices.length === 0) {
@@ -144,7 +209,36 @@ const getById = async (req, res) => {
       `SELECT * FROM invoice_items WHERE invoice_id = ?`,
       [invoice.id]
     );
-    invoice.items = items;
+    invoice.items = items || [];
+    
+    // Calculate totals
+    const paidAmount = parseFloat(invoice.paid_amount || 0);
+    const totalAmount = parseFloat(invoice.total || 0);
+    const dueAmount = totalAmount - paidAmount;
+    
+    invoice.paid_amount = paidAmount;
+    invoice.due_amount = dueAmount;
+    invoice.bill_date = invoice.bill_date || invoice.invoice_date || invoice.created_at;
+    
+    // Determine status based on payments
+    if (!invoice.status || invoice.status === 'Draft') {
+      invoice.status = 'Draft';
+    } else if (paidAmount === 0) {
+      invoice.status = 'Unpaid';
+    } else if (paidAmount >= totalAmount) {
+      invoice.status = 'Fully Paid';
+    } else if (paidAmount > 0) {
+      invoice.status = 'Partially Paid';
+    }
+    
+    // Check for credit notes
+    const [creditNotes] = await pool.execute(
+      `SELECT SUM(amount) as total_credit FROM credit_notes WHERE invoice_id = ? AND is_deleted = 0`,
+      [invoice.id]
+    );
+    if (creditNotes[0]?.total_credit > 0) {
+      invoice.status = 'Credited';
+    }
 
     res.json({
       success: true,
@@ -728,6 +822,70 @@ const generatePDF = async (req, res) => {
   }
 };
 
+/**
+ * Send invoice by email
+ * POST /api/v1/invoices/:id/send-email
+ */
+const sendEmail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { to, subject, message } = req.body;
+
+    // Get invoice
+    const [invoices] = await pool.execute(
+      `SELECT i.*, c.company_name as client_name, c.email as client_email, comp.name as company_name
+       FROM invoices i
+       LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN companies comp ON i.company_id = comp.id
+       WHERE i.id = ? AND i.is_deleted = 0`,
+      [id]
+    );
+
+    if (invoices.length === 0) {
+      return res.status(404).json({ success: false, error: 'Invoice not found' });
+    }
+
+    const invoice = invoices[0];
+
+    // Generate public URL
+    const publicUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/public/invoices/${id}`;
+
+    // Generate email HTML
+    const { sendEmail: sendEmailUtil, generateInvoiceEmailHTML } = require('../utils/emailService');
+    const emailHTML = generateInvoiceEmailHTML(invoice, publicUrl);
+
+    // Send email
+    const recipientEmail = to || invoice.client_email;
+    if (!recipientEmail) {
+      return res.status(400).json({ success: false, error: 'Recipient email is required' });
+    }
+
+    await sendEmailUtil({
+      to: recipientEmail,
+      subject: subject || `Invoice ${invoice.invoice_number}`,
+      html: emailHTML,
+      text: `Please view the invoice at: ${publicUrl}`
+    });
+
+    // Update invoice status to 'Sent' if it's Draft
+    if (invoice.status === 'Draft') {
+      await pool.execute(
+        `UPDATE invoices SET status = 'Unpaid', sent_at = NOW() WHERE id = ?`,
+        [id]
+      );
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Invoice sent successfully',
+      data: { email: recipientEmail }
+    });
+  } catch (error) {
+    console.error('Send invoice email error:', error);
+    res.status(500).json({ success: false, error: 'Failed to send invoice email' });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -736,6 +894,7 @@ module.exports = {
   delete: deleteInvoice,
   createFromTimeLogs,
   createRecurring,
-  generatePDF
+  generatePDF,
+  sendEmail
 };
 

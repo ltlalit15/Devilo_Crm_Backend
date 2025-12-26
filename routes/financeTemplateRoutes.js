@@ -1,15 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const financeTemplateController = require('../controllers/financeTemplateController');
-const { optionalAuth, requireRole } = require('../middleware/auth');
 
-// GET routes don't require token - faster API calls
-router.get('/', optionalAuth, financeTemplateController.getAll);
-router.get('/:id', optionalAuth, financeTemplateController.getById);
-router.post('/', optionalAuth, requireRole(['ADMIN']), financeTemplateController.create);
-router.put('/:id', optionalAuth, requireRole(['ADMIN']), financeTemplateController.update);
-router.delete('/:id', optionalAuth, requireRole(['ADMIN']), financeTemplateController.delete);
-router.post('/:id/generate-report', optionalAuth, financeTemplateController.generateReport);
+// No authentication required - all routes are public
+router.get('/', financeTemplateController.getAll);
+router.get('/:id', financeTemplateController.getById);
+router.post('/', financeTemplateController.create);
+router.put('/:id', financeTemplateController.update);
+router.delete('/:id', financeTemplateController.delete);
+router.post('/:id/generate-report', financeTemplateController.generateReport);
 
 module.exports = router;
 

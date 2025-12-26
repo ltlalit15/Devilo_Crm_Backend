@@ -3,7 +3,6 @@
 // =====================================================
 
 const pool = require('../config/db');
-const { parsePagination, getPaginationMeta } = require('../utils/pagination');
 
 /**
  * Generate task code
@@ -46,23 +45,20 @@ const generateTaskCode = async (projectId, companyId) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { status, project_id, assigned_to, company_id } = req.query;
-    
-    // Parse pagination parameters
-    const { page, pageSize, limit, offset } = parsePagination(req.query);
+    const { status, project_id, assigned_to } = req.query;
 
-    // Only filter by company_id if explicitly provided in query params
-    // Don't use req.companyId automatically - show all tasks by default
-    const filterCompanyId = company_id || req.companyId;
+    // Admin must provide company_id - required for filtering
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    let whereClause = 'WHERE t.is_deleted = 0';
-    const params = [];
-
-    // Add company filter only if explicitly requested via query param or req.companyId exists
-    if (filterCompanyId) {
-      whereClause += ' AND t.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
+    
+    let whereClause = 'WHERE t.company_id = ? AND t.is_deleted = 0';
+    const params = [filterCompanyId];
 
     if (status) {
       whereClause += ' AND t.status = ?';
@@ -79,21 +75,13 @@ const getAll = async (req, res) => {
       params.push(assigned_to);
     }
 
-    // Get total count for pagination
-    const [countResult] = await pool.execute(
-      `SELECT COUNT(*) as total FROM tasks t ${whereClause}`,
-      params
-    );
-    const total = countResult[0].total;
-
-    // Get paginated tasks - LIMIT and OFFSET as template literals (not placeholders)
+    // Get all tasks without pagination
     const [tasks] = await pool.execute(
       `SELECT t.*, p.project_name, p.short_code as project_code
        FROM tasks t
        LEFT JOIN projects p ON t.project_id = p.id
        ${whereClause}
-       ORDER BY t.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
+       ORDER BY t.created_at DESC`,
       params
     );
 
@@ -116,8 +104,7 @@ const getAll = async (req, res) => {
 
     res.json({
       success: true,
-      data: tasks,
-      pagination: getPaginationMeta(total, page, pageSize)
+      data: tasks
     });
   } catch (error) {
     console.error('Get tasks error:', error);

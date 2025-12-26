@@ -5,15 +5,31 @@
 const express = require('express');
 const router = express.Router();
 const leadController = require('../controllers/leadController');
-const { optionalAuth, requireRole } = require('../middleware/auth');
 
-// GET routes don't require token - faster API calls
-router.get('/', optionalAuth, leadController.getAll);
-router.get('/:id', optionalAuth, leadController.getById);
-router.post('/', optionalAuth, requireRole(['ADMIN']), leadController.create);
-router.put('/:id', optionalAuth, requireRole(['ADMIN']), leadController.update);
-router.delete('/:id', optionalAuth, requireRole(['ADMIN']), leadController.delete);
-router.post('/:id/convert-to-client', optionalAuth, requireRole(['ADMIN']), leadController.convertToClient);
+// No authentication required - all routes are public
+
+// IMPORTANT: Specific routes must come BEFORE parameterized routes (/:id)
+// Otherwise Express will match /contacts as /:id with id="contacts"
+
+// Contacts routes (for Leads Contacts tab) - MUST come before /:id routes
+router.get('/contacts', leadController.getAllContacts);
+router.get('/contacts/:id', leadController.getContactById);
+router.post('/contacts', leadController.createContact);
+router.put('/contacts/:id', leadController.updateContact);
+router.delete('/contacts/:id', leadController.deleteContact);
+
+// Other specific routes
+router.get('/overview', leadController.getOverview);
+router.post('/bulk-action', leadController.bulkAction);
+
+// Parameterized routes (must come after specific routes)
+router.get('/', leadController.getAll);
+router.get('/:id', leadController.getById);
+router.post('/', leadController.create);
+router.put('/:id', leadController.update);
+router.put('/:id/update-status', leadController.updateStatus);
+router.delete('/:id', leadController.delete);
+router.post('/:id/convert-to-client', leadController.convertToClient);
 
 module.exports = router;
 
