@@ -13,42 +13,41 @@ const getAll = async (req, res) => {
   try {
     const { status, search } = req.query;
 
-    // Admin must provide company_id - no default fallback
+    // company_id is optional - if not provided, return all clients
     const companyId = req.query.company_id || req.body.company_id || req.companyId;
     
     console.log('GET /clients - companyId:', companyId, 'query:', req.query, 'body:', req.body);
     
-    if (!companyId) {
-      console.error('GET /clients - company_id is missing');
-      return res.status(400).json({
-        success: false,
-        error: 'company_id is required'
-      });
+    let whereClause = 'WHERE c.is_deleted = 0';
+    const params = [];
+    
+    // Filter by company_id only if provided
+    if (companyId) {
+      whereClause += ' AND c.company_id = ?';
+      params.push(companyId);
     }
-
-    let whereClause = 'WHERE c.company_id = ? AND c.is_deleted = 0';
-    const params = [companyId];
 
     if (status) {
       whereClause += ' AND c.status = ?';
       params.push(status);
     }
     if (search) {
-      whereClause += ' AND (c.company_name LIKE ? OR c.phone_number LIKE ?)';
+      whereClause += ' AND (c.company_name LIKE ? OR c.phone_number LIKE ? OR u.name LIKE ? OR u.email LIKE ?)';
       const searchTerm = `%${search}%`;
-      params.push(searchTerm, searchTerm);
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
     }
 
     // Get all clients without pagination
     // Include client's actual name and email from users table
+    // COALESCE ensures we always have a display name (prefer user name, fallback to company_name)
     const [clients] = await pool.execute(
       `SELECT c.*, 
-              u.name as client_name,
-              u.name as name,
+              COALESCE(u.name, c.company_name) as client_name,
+              COALESCE(u.name, c.company_name) as name,
               c.company_name,
               c.phone_number as phone,
-              u.name as owner_name, 
-              u.email as email,
+              COALESCE(u.name, c.company_name) as owner_name, 
+              COALESCE(u.email, '') as email,
               comp.name as admin_company_name,
               (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.is_deleted = 0) as total_projects,
               (SELECT COALESCE(SUM(total), 0) FROM invoices i WHERE i.client_id = c.id AND i.is_deleted = 0) as total_invoiced,
@@ -112,14 +111,15 @@ const getById = async (req, res) => {
       });
     }
     // Get client with actual client name from users table
+    // COALESCE ensures we always have a display name
     const [clients] = await pool.execute(
       `SELECT c.*, 
-              u.name as client_name,
-              u.name as name,
+              COALESCE(u.name, c.company_name) as client_name,
+              COALESCE(u.name, c.company_name) as name,
               c.company_name,
               c.phone_number as phone,
-              u.name as owner_name, 
-              u.email as email,
+              COALESCE(u.name, c.company_name) as owner_name, 
+              COALESCE(u.email, '') as email,
               comp.name as admin_company_name,
               (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.is_deleted = 0) as total_projects,
               (SELECT COALESCE(SUM(total), 0) FROM invoices i WHERE i.client_id = c.id AND i.is_deleted = 0) as total_invoiced,

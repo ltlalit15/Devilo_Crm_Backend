@@ -4,32 +4,69 @@
 
 const pool = require('../config/db');
 
+// Ensure leave_requests table exists and has all required columns
+const ensureTableExists = async () => {
+  try {
+    // Create table if not exists
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS leave_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT,
+        user_id INT,
+        leave_type VARCHAR(100),
+        start_date DATE,
+        end_date DATE,
+        reason TEXT,
+        status VARCHAR(50) DEFAULT 'Pending',
+        is_deleted TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_company (company_id),
+        INDEX idx_user (user_id),
+        INDEX idx_status (status)
+      )
+    `);
+    
+    // Try to add user_id column if missing
+    try {
+      await pool.execute(`ALTER TABLE leave_requests ADD COLUMN user_id INT AFTER company_id`);
+    } catch (e) {
+      // Column already exists, ignore
+    }
+    
+  } catch (error) {
+    console.error('Error ensuring leave_requests table exists:', error);
+  }
+};
+
+// Call once on module load
+ensureTableExists();
+
 /**
  * Get all leave requests
  * GET /api/v1/leave-requests
  */
 const getAll = async (req, res) => {
   try {
-    const filterCompanyId = req.query.company_id || req.body.company_id || 1;
-    const employee_id = req.query.employee_id || req.userId;
+    const filterCompanyId = req.query.company_id || req.body.company_id;
+    const user_id = req.query.user_id || req.query.employee_id || req.userId;
     const status = req.query.status;
     const leave_type = req.query.leave_type;
 
-    let whereClause = 'WHERE lr.is_deleted = 0';
-    const params = [];
-
-    if (filterCompanyId) {
-      whereClause += ' AND lr.company_id = ?';
-      params.push(filterCompanyId);
+    if (!filterCompanyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
     }
 
-    // Employee can only see their own requests, Admin can see all
-    if (req.user && req.user.role === 'EMPLOYEE') {
-      whereClause += ' AND lr.employee_id = ?';
-      params.push(employee_id);
-    } else if (employee_id) {
-      whereClause += ' AND lr.employee_id = ?';
-      params.push(employee_id);
+    let whereClause = 'WHERE lr.is_deleted = 0 AND lr.company_id = ?';
+    const params = [filterCompanyId];
+
+    // Filter by user_id
+    if (user_id) {
+      whereClause += ' AND lr.user_id = ?';
+      params.push(user_id);
     }
 
     if (status) {
@@ -42,17 +79,16 @@ const getAll = async (req, res) => {
       params.push(leave_type);
     }
 
-    // Get all leave requests without pagination
+    // Simple query with user join and calculated days
     const [requests] = await pool.execute(
-      `SELECT lr.*, 
-              e.user_id,
+      `SELECT lr.id, lr.company_id, lr.user_id, lr.leave_type, 
+              lr.start_date, lr.end_date, lr.reason, lr.status,
+              lr.is_deleted, lr.created_at, lr.updated_at,
+              DATEDIFF(lr.end_date, lr.start_date) + 1 as days,
               u.name as employee_name,
-              u.email as employee_email,
-              d.name as department_name
+              u.email as employee_email
        FROM leave_requests lr
-       LEFT JOIN employees e ON lr.employee_id = e.id
-       LEFT JOIN users u ON e.user_id = u.id
-       LEFT JOIN departments d ON e.department_id = d.id
+       LEFT JOIN users u ON lr.user_id = u.id
        ${whereClause}
        ORDER BY lr.created_at DESC`,
       params
@@ -64,9 +100,11 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get leave requests error:', error);
+    console.error('Error details:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch leave requests'
+      error: 'Failed to fetch leave requests',
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -79,6 +117,7 @@ const getById = async (req, res) => {
   try {
     const { id } = req.params;
     const filterCompanyId = req.query.company_id || req.companyId;
+    const user_id = req.query.user_id || req.userId;
 
     let whereClause = 'WHERE lr.id = ? AND lr.is_deleted = 0';
     const params = [id];
@@ -88,28 +127,21 @@ const getById = async (req, res) => {
       params.push(filterCompanyId);
     }
 
-    // Employee can only see their own requests
-    if (req.user && req.user.role === 'EMPLOYEE') {
-      const [employee] = await pool.execute(
-        'SELECT id FROM employees WHERE user_id = ?',
-        [req.userId]
-      );
-      if (employee.length > 0) {
-        whereClause += ' AND lr.employee_id = ?';
-        params.push(employee[0].id);
-      }
+    // Filter by user_id if provided
+    if (user_id) {
+      whereClause += ' AND lr.user_id = ?';
+      params.push(user_id);
     }
 
     const [requests] = await pool.execute(
-      `SELECT lr.*, 
-              e.user_id,
+      `SELECT lr.id, lr.company_id, lr.user_id, lr.leave_type, 
+              lr.start_date, lr.end_date, lr.reason, lr.status,
+              lr.is_deleted, lr.created_at, lr.updated_at,
+              DATEDIFF(lr.end_date, lr.start_date) + 1 as days,
               u.name as employee_name,
-              u.email as employee_email,
-              d.name as department_name
+              u.email as employee_email
        FROM leave_requests lr
-       LEFT JOIN employees e ON lr.employee_id = e.id
-       LEFT JOIN users u ON e.user_id = u.id
-       LEFT JOIN departments d ON e.department_id = d.id
+       LEFT JOIN users u ON lr.user_id = u.id
        ${whereClause}`,
       params
     );
@@ -142,10 +174,10 @@ const create = async (req, res) => {
   try {
     const {
       employee_id,
+      user_id,
       leave_type,
       start_date,
       end_date,
-      days,
       reason,
       status = 'Pending'
     } = req.body;
@@ -157,59 +189,46 @@ const create = async (req, res) => {
       });
     }
 
-    const companyId = req.body.company_id || req.companyId;
+    const companyId = req.body.company_id || req.query.company_id;
     
-    // Get employee_id from user if not provided (for employee role)
-    let finalEmployeeId = employee_id;
-    if (!finalEmployeeId && req.user && req.user.role === 'EMPLOYEE') {
-      const [employee] = await pool.execute(
-        'SELECT id FROM employees WHERE user_id = ?',
-        [req.userId]
-      );
-      if (employee.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Employee profile not found'
-        });
-      }
-      finalEmployeeId = employee[0].id;
-    }
-
-    if (!finalEmployeeId) {
+    if (!companyId) {
       return res.status(400).json({
         success: false,
-        error: 'Employee ID is required'
+        error: 'company_id is required'
+      });
+    }
+    
+    // Use user_id directly
+    const finalUserId = user_id || employee_id;
+
+    if (!finalUserId) {
+      return res.status(400).json({
+        success: false,
+        error: 'user_id is required'
       });
     }
 
-    // Calculate days if not provided
-    let calculatedDays = days;
-    if (!calculatedDays) {
-      const start = new Date(start_date);
-      const end = new Date(end_date);
-      const diffTime = Math.abs(end - start);
-      calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    }
-
+    // Insert without days column (calculate dynamically when needed)
     const [result] = await pool.execute(
       `INSERT INTO leave_requests (
-        company_id, employee_id, leave_type, start_date, end_date,
-        days, reason, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        company_id, user_id, leave_type, start_date, end_date,
+        reason, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
-        companyId || null,
-        finalEmployeeId,
+        companyId,
+        finalUserId,
         leave_type,
         start_date,
         end_date,
-        calculatedDays,
         reason || null,
         status
       ]
     );
 
+    // Return with calculated days
     const [newRequest] = await pool.execute(
-      'SELECT * FROM leave_requests WHERE id = ?',
+      `SELECT *, DATEDIFF(end_date, start_date) + 1 as days 
+       FROM leave_requests WHERE id = ?`,
       [result.insertId]
     );
 
@@ -220,9 +239,11 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create leave request error:', error);
+    console.error('Error details:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to create leave request'
+      error: 'Failed to create leave request',
+      details: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -238,12 +259,13 @@ const update = async (req, res) => {
       leave_type,
       start_date,
       end_date,
-      days,
       reason,
-      status
+      status,
+      user_id
     } = req.body;
 
-    const filterCompanyId = req.body.company_id || req.companyId;
+    const filterCompanyId = req.body.company_id || req.query.company_id;
+    const userId = user_id || req.query.user_id || req.userId;
 
     // Check if request exists
     let whereClause = 'WHERE id = ? AND is_deleted = 0';
@@ -254,16 +276,10 @@ const update = async (req, res) => {
       checkParams.push(filterCompanyId);
     }
 
-    // Employee can only update their own pending requests
-    if (req.user && req.user.role === 'EMPLOYEE') {
-      const [employee] = await pool.execute(
-        'SELECT id FROM employees WHERE user_id = ?',
-        [req.userId]
-      );
-      if (employee.length > 0) {
-        whereClause += ' AND employee_id = ? AND status = ?';
-        checkParams.push(employee[0].id, 'Pending');
-      }
+    // Filter by user_id to ensure user can only update their own
+    if (userId) {
+      whereClause += ' AND user_id = ?';
+      checkParams.push(userId);
     }
 
     const [existing] = await pool.execute(
@@ -275,6 +291,14 @@ const update = async (req, res) => {
       return res.status(404).json({
         success: false,
         error: 'Leave request not found or you do not have permission to update it'
+      });
+    }
+    
+    // Only allow update if status is Pending
+    if (existing[0].status !== 'Pending') {
+      return res.status(400).json({
+        success: false,
+        error: 'Can only update pending leave requests'
       });
     }
 
@@ -293,10 +317,6 @@ const update = async (req, res) => {
     if (end_date !== undefined) {
       updates.push('end_date = ?');
       params.push(end_date);
-    }
-    if (days !== undefined) {
-      updates.push('days = ?');
-      params.push(days);
     }
     if (reason !== undefined) {
       updates.push('reason = ?');
@@ -323,8 +343,10 @@ const update = async (req, res) => {
       params
     );
 
+    // Return with calculated days
     const [updatedRequest] = await pool.execute(
-      'SELECT * FROM leave_requests WHERE id = ?',
+      `SELECT *, DATEDIFF(end_date, start_date) + 1 as days 
+       FROM leave_requests WHERE id = ?`,
       [id]
     );
 
@@ -350,6 +372,7 @@ const deleteRequest = async (req, res) => {
   try {
     const { id } = req.params;
     const filterCompanyId = req.query.company_id || req.companyId;
+    const userId = req.query.user_id || req.userId;
 
     let whereClause = 'WHERE id = ? AND is_deleted = 0';
     const params = [id];
@@ -359,17 +382,15 @@ const deleteRequest = async (req, res) => {
       params.push(filterCompanyId);
     }
 
-    // Employee can only delete their own pending requests
-    if (req.user && req.user.role === 'EMPLOYEE') {
-      const [employee] = await pool.execute(
-        'SELECT id FROM employees WHERE user_id = ?',
-        [req.userId]
-      );
-      if (employee.length > 0) {
-        whereClause += ' AND employee_id = ? AND status = ?';
-        params.push(employee[0].id, 'Pending');
-      }
+    // Filter by user_id (user can only delete their own)
+    if (userId) {
+      whereClause += ' AND user_id = ?';
+      params.push(userId);
     }
+
+    // Only allow deleting pending requests
+    whereClause += ' AND status = ?';
+    params.push('Pending');
 
     const [existing] = await pool.execute(
       `SELECT id FROM leave_requests ${whereClause}`,
@@ -379,7 +400,7 @@ const deleteRequest = async (req, res) => {
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Leave request not found or you do not have permission to delete it'
+        error: 'Leave request not found or cannot be deleted (only pending requests can be deleted)'
       });
     }
 

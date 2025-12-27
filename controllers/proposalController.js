@@ -7,10 +7,10 @@ const pool = require('../config/db');
 const generateProposalNumber = async (companyId) => {
   try {
     // Find the highest existing proposal number for this company
-    // Using estimates table but filtering by proposal_number pattern
+    // Include ALL records (even deleted) to avoid duplicate key errors
     const [result] = await pool.execute(
       `SELECT estimate_number FROM estimates 
-       WHERE company_id = ? AND is_deleted = 0 
+       WHERE company_id = ? 
        AND estimate_number LIKE 'PROP#%'
        ORDER BY LENGTH(estimate_number) DESC, estimate_number DESC 
        LIMIT 1`,
@@ -30,15 +30,15 @@ const generateProposalNumber = async (companyId) => {
       }
     }
     
-    // Ensure uniqueness by checking if the number already exists
+    // Ensure uniqueness by checking if the number already exists (including deleted)
     let proposalNumber = `PROP#${String(nextNum).padStart(3, '0')}`;
     let attempts = 0;
     const maxAttempts = 100;
     
     while (attempts < maxAttempts) {
       const [existing] = await pool.execute(
-        `SELECT id FROM estimates WHERE company_id = ? AND estimate_number = ? AND is_deleted = 0`,
-        [companyId, proposalNumber]
+        `SELECT id FROM estimates WHERE estimate_number = ?`,
+        [proposalNumber]
       );
       
       if (existing.length === 0) {

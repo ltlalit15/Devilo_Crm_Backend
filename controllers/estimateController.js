@@ -7,10 +7,10 @@ const pool = require('../config/db');
 const generateEstimateNumber = async (companyId) => {
   try {
     // Find the highest existing estimate number globally (estimate_number has UNIQUE constraint)
-    // Check all estimates, not just for this company, since estimate_number is globally unique
+    // Include ALL records (even deleted) to avoid duplicate key errors
     const [result] = await pool.execute(
       `SELECT estimate_number FROM estimates 
-       WHERE is_deleted = 0 AND estimate_number LIKE 'EST#%'
+       WHERE estimate_number LIKE 'EST#%'
        ORDER BY LENGTH(estimate_number) DESC, estimate_number DESC 
        LIMIT 1`
     );
@@ -36,7 +36,7 @@ const generateEstimateNumber = async (companyId) => {
     while (attempts < maxAttempts) {
       // Check globally since estimate_number has UNIQUE constraint
       const [existing] = await pool.execute(
-        `SELECT id FROM estimates WHERE estimate_number = ? AND is_deleted = 0`,
+        `SELECT id FROM estimates WHERE estimate_number = ?`,
         [estimateNumber]
       );
       

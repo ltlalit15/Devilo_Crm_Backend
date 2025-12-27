@@ -345,4 +345,197 @@ const reject = async (req, res) => {
   }
 };
 
-module.exports = { getAll, create, approve, reject };
+/**
+ * Get expense by ID
+ * GET /api/v1/expenses/:id
+ */
+const getById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+
+    const [expenses] = await pool.execute(
+      `SELECT e.* FROM expenses e
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (expenses.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Expense not found'
+      });
+    }
+
+    // Get items
+    const [items] = await pool.execute(
+      `SELECT * FROM expense_items WHERE expense_id = ?`,
+      [id]
+    );
+    expenses[0].items = items;
+
+    res.json({
+      success: true,
+      data: expenses[0]
+    });
+  } catch (error) {
+    console.error('Get expense by ID error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch expense'
+    });
+  }
+};
+
+/**
+ * Update expense
+ * PUT /api/v1/expenses/:id
+ */
+const update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      company_id, lead_id, deal_id, valid_till, currency, calculate_tax, description,
+      note, terms, discount, discount_type, require_approval, items = []
+    } = req.body;
+
+    const companyId = company_id || req.query.company_id || 1;
+
+    // Check if expense exists
+    const [existing] = await pool.execute(
+      `SELECT id FROM expenses WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Expense not found'
+      });
+    }
+
+    // Calculate totals
+    const totals = calculateTotals(items, discount || 0, discount_type || '%');
+
+    // Update expense
+    await pool.execute(
+      `UPDATE expenses SET
+        lead_id = ?, deal_id = ?, valid_till = ?, currency = ?,
+        calculate_tax = ?, description = ?, note = ?, terms = ?,
+        discount = ?, discount_type = ?, require_approval = ?,
+        sub_total = ?, discount_amount = ?, tax_amount = ?, total = ?,
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        lead_id ?? null,
+        deal_id ?? null,
+        valid_till,
+        currency || 'USD',
+        calculate_tax || 'After Discount',
+        description ?? null,
+        note ?? null,
+        terms ?? null,
+        discount ?? 0,
+        discount_type || '%',
+        require_approval ?? 1,
+        totals.sub_total,
+        totals.discount_amount,
+        totals.tax_amount,
+        totals.total,
+        id
+      ]
+    );
+
+    // Update items - delete old and insert new
+    if (items && items.length > 0) {
+      await pool.execute(`DELETE FROM expense_items WHERE expense_id = ?`, [id]);
+      
+      const itemValues = items.map(item => [
+        id,
+        item.item_name || item.description || '',
+        item.description || null,
+        item.quantity || 1,
+        item.unit || 'Pcs',
+        item.unit_price || 0,
+        item.tax || null,
+        item.tax_rate || 0,
+        item.file_path || null,
+        item.amount || 0
+      ]);
+
+      await pool.query(
+        `INSERT INTO expense_items (
+          expense_id, item_name, description, quantity, unit, unit_price, tax, tax_rate, file_path, amount
+        ) VALUES ?`,
+        [itemValues]
+      );
+    }
+
+    // Get updated expense
+    const [expenses] = await pool.execute(
+      `SELECT * FROM expenses WHERE id = ?`,
+      [id]
+    );
+
+    const [expenseItems] = await pool.execute(
+      `SELECT * FROM expense_items WHERE expense_id = ?`,
+      [id]
+    );
+    expenses[0].items = expenseItems;
+
+    res.json({
+      success: true,
+      data: expenses[0],
+      message: 'Expense updated successfully'
+    });
+  } catch (error) {
+    console.error('Update expense error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update expense'
+    });
+  }
+};
+
+/**
+ * Delete expense (soft delete)
+ * DELETE /api/v1/expenses/:id
+ */
+const deleteExpense = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+
+    // Check if expense exists
+    const [existing] = await pool.execute(
+      `SELECT id FROM expenses WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Expense not found'
+      });
+    }
+
+    // Soft delete
+    await pool.execute(
+      `UPDATE expenses SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Expense deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete expense error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete expense'
+    });
+  }
+};
+
+module.exports = { getAll, getById, create, update, delete: deleteExpense, approve, reject };

@@ -1,11 +1,40 @@
 const pool = require('../config/db');
 
+// Ensure attendance table exists
+const ensureTableExists = async () => {
+  try {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS attendance (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL,
+        user_id INT NOT NULL,
+        date DATE NOT NULL,
+        check_in TIME,
+        check_out TIME,
+        status VARCHAR(50) DEFAULT 'Present',
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_user_date (user_id, date),
+        INDEX idx_company (company_id),
+        INDEX idx_user (user_id),
+        INDEX idx_date (date)
+      )
+    `);
+  } catch (error) {
+    console.error('Error ensuring attendance table exists:', error);
+  }
+};
+
+// Call once on module load
+ensureTableExists();
+
 const getAll = async (req, res) => {
   try {
     const { user_id, month, year } = req.query;
     
     const companyId = req.query.company_id || req.body.company_id || 1;
-    let whereClause = 'WHERE a.company_id = ? AND u.is_deleted = 0';
+    let whereClause = 'WHERE a.company_id = ?';
     const params = [companyId];
     
     // Filter by user_id if provided (for employee dashboard)
@@ -35,20 +64,24 @@ const getAll = async (req, res) => {
         a.id,
         a.company_id,
         a.user_id,
-        a.date,
-        a.check_in,
-        a.check_out,
+        DATE_FORMAT(a.date, '%Y-%m-%d') as date,
+        TIME_FORMAT(a.check_in, '%H:%i') as check_in,
+        TIME_FORMAT(a.check_out, '%H:%i') as check_out,
         a.status,
         a.notes,
         a.created_at,
         a.updated_at,
         u.name as employee_name,
         u.email as employee_email,
-        TIMESTAMPDIFF(HOUR, CONCAT(a.date, ' ', a.check_in), CONCAT(a.date, ' ', COALESCE(a.check_out, NOW()))) as total_hours
+        CASE 
+          WHEN a.check_in IS NOT NULL AND a.check_out IS NOT NULL 
+          THEN ROUND(TIMESTAMPDIFF(MINUTE, a.check_in, a.check_out) / 60, 1)
+          ELSE NULL
+        END as total_hours
       FROM attendance a
-      JOIN users u ON a.user_id = u.id
+      LEFT JOIN users u ON a.user_id = u.id
       ${whereClause}
-      ORDER BY a.date DESC, u.name ASC`,
+      ORDER BY a.date DESC`,
       params
     );
     res.json({ 
@@ -57,6 +90,7 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get attendance error:', error);
+    console.error('Error details:', error.message);
     res.status(500).json({ success: false, error: 'Failed to fetch attendance' });
   }
 };
@@ -67,13 +101,21 @@ const getAll = async (req, res) => {
  */
 const getMonthlyCalendar = async (req, res) => {
   try {
-    const { month, year, user_id } = req.query;
+    const { month, year, user_id, company_id } = req.query;
     const userId = user_id || req.userId;
+    const companyId = company_id || req.companyId;
     
     if (!month || !year) {
       return res.status(400).json({
         success: false,
         error: 'Month and year are required'
+      });
+    }
+
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
       });
     }
 
@@ -85,15 +127,19 @@ const getMonthlyCalendar = async (req, res) => {
 
     const [attendance] = await pool.execute(
       `SELECT 
-        a.date,
-        a.check_in,
-        a.check_out,
+        DATE_FORMAT(a.date, '%Y-%m-%d') as date,
+        TIME_FORMAT(a.check_in, '%H:%i') as check_in,
+        TIME_FORMAT(a.check_out, '%H:%i') as check_out,
         a.status,
-        TIMESTAMPDIFF(HOUR, CONCAT(a.date, ' ', a.check_in), CONCAT(a.date, ' ', COALESCE(a.check_out, NOW()))) as total_hours
+        CASE 
+          WHEN a.check_in IS NOT NULL AND a.check_out IS NOT NULL 
+          THEN ROUND(TIMESTAMPDIFF(MINUTE, a.check_in, a.check_out) / 60, 1)
+          ELSE NULL
+        END as total_hours
       FROM attendance a
       WHERE a.company_id = ? AND a.user_id = ? AND a.date >= ? AND a.date <= ?
       ORDER BY a.date ASC`,
-      [req.companyId, userId, startDate, endDate]
+      [companyId, userId, startDate, endDate]
     );
 
     // Calculate attendance percentage
@@ -126,13 +172,21 @@ const getMonthlyCalendar = async (req, res) => {
  */
 const getAttendancePercentage = async (req, res) => {
   try {
-    const { month, year, user_id } = req.query;
+    const { month, year, user_id, company_id } = req.query;
     const userId = user_id || req.userId;
+    const companyId = company_id || req.companyId;
     
     if (!month || !year) {
       return res.status(400).json({
         success: false,
         error: 'Month and year are required'
+      });
+    }
+
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
       });
     }
 
@@ -151,7 +205,7 @@ const getAttendancePercentage = async (req, res) => {
         SUM(CASE WHEN status = 'Half Day' THEN 1 ELSE 0 END) as half_days
       FROM attendance
       WHERE company_id = ? AND user_id = ? AND date >= ? AND date <= ?`,
-      [req.companyId, userId, startDate, endDate]
+      [companyId, userId, startDate, endDate]
     );
 
     const totalDays = lastDay;
@@ -217,16 +271,169 @@ const checkOut = async (req, res) => {
     }
     
     const today = new Date().toISOString().split('T')[0];
+    const currentTime = new Date().toTimeString().split(' ')[0]; // HH:MM:SS format
+    
     await pool.execute(
-      `UPDATE attendance SET check_out = NOW() WHERE company_id = ? AND user_id = ? AND date = ?`,
+      `UPDATE attendance SET check_out = ? WHERE company_id = ? AND user_id = ? AND date = ?`,
+      [currentTime, companyId, userId, today]
+    );
+    
+    // Get the updated record to return hours worked
+    const [record] = await pool.execute(
+      `SELECT check_in, check_out,
+              TIMESTAMPDIFF(MINUTE, check_in, check_out) as total_minutes
+       FROM attendance WHERE company_id = ? AND user_id = ? AND date = ?`,
       [companyId, userId, today]
     );
-    res.json({ success: true, message: 'Checked out successfully' });
+    
+    const totalMinutes = record[0]?.total_minutes || 0;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    
+    res.json({ 
+      success: true, 
+      message: 'Checked out successfully',
+      data: {
+        check_out: currentTime.substring(0, 5),
+        total_hours: `${hours}h ${minutes}m`,
+        date: today
+      }
+    });
   } catch (error) {
     console.error('Check out error:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to check out' });
   }
 };
 
-module.exports = { getAll, checkIn, checkOut, getMonthlyCalendar, getAttendancePercentage };
+/**
+ * Get attendance by ID
+ * GET /api/v1/attendance/:id
+ */
+const getById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.companyId;
+    const userId = req.query.user_id || req.userId;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    let whereClause = 'WHERE a.id = ? AND a.company_id = ?';
+    const params = [id, companyId];
+
+    // If user_id is provided, filter by it
+    if (userId) {
+      whereClause += ' AND a.user_id = ?';
+      params.push(userId);
+    }
+
+    const [attendance] = await pool.execute(
+      `SELECT 
+        a.id,
+        a.company_id,
+        a.user_id,
+        a.date,
+        a.check_in,
+        a.check_out,
+        a.status,
+        a.notes,
+        a.created_at,
+        a.updated_at,
+        u.name as employee_name,
+        u.email as employee_email,
+        TIMESTAMPDIFF(HOUR, CONCAT(a.date, ' ', a.check_in), CONCAT(a.date, ' ', COALESCE(a.check_out, NOW()))) as total_hours
+      FROM attendance a
+      JOIN users u ON a.user_id = u.id
+      ${whereClause}`,
+      params
+    );
+
+    if (attendance.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Attendance record not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: attendance[0]
+    });
+  } catch (error) {
+    console.error('Get attendance by ID error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch attendance'
+    });
+  }
+};
+
+/**
+ * Get today's attendance status
+ * GET /api/v1/attendance/today
+ */
+const getTodayStatus = async (req, res) => {
+  try {
+    const companyId = req.query.company_id || req.companyId;
+    const userId = req.query.user_id || req.userId;
+
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
+      });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+
+    const [attendance] = await pool.execute(
+      `SELECT * FROM attendance WHERE company_id = ? AND user_id = ? AND date = ?`,
+      [companyId, userId, today]
+    );
+
+    if (attendance.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          checked_in: false,
+          checked_out: false,
+          check_in: null,
+          check_out: null
+        }
+      });
+    }
+
+    const record = attendance[0];
+    res.json({
+      success: true,
+      data: {
+        checked_in: !!record.check_in,
+        checked_out: !!record.check_out,
+        check_in: record.check_in,
+        check_out: record.check_out,
+        status: record.status
+      }
+    });
+  } catch (error) {
+    console.error('Get today status error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch today status'
+    });
+  }
+};
+
+module.exports = { 
+  getAll, 
+  getById,
+  checkIn, 
+  checkOut, 
+  getMonthlyCalendar, 
+  getAttendancePercentage,
+  getTodayStatus
+};
 

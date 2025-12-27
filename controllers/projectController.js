@@ -59,10 +59,34 @@ const getAll = async (req, res) => {
       }
     }
 
-    // Client filter
+    // Client filter - handle both client.id and user_id (owner_id)
     if (client_id) {
-      whereClause += ' AND p.client_id = ?';
-      params.push(client_id);
+      // First check if this is a valid client.id
+      const [directClient] = await pool.execute(
+        'SELECT id FROM clients WHERE id = ? AND is_deleted = 0',
+        [client_id]
+      );
+      
+      if (directClient.length > 0) {
+        // It's a valid client.id
+        whereClause += ' AND p.client_id = ?';
+        params.push(client_id);
+      } else {
+        // Try to find client by owner_id (user_id)
+        const [clientByOwner] = await pool.execute(
+          'SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0',
+          [client_id, filterCompanyId]
+        );
+        
+        if (clientByOwner.length > 0) {
+          whereClause += ' AND p.client_id = ?';
+          params.push(clientByOwner[0].id);
+        } else {
+          // No client found - show projects created by this user OR assigned to them
+          whereClause += ' AND (p.created_by = ? OR p.client_id = ? OR p.project_manager_id = ?)';
+          params.push(client_id, client_id, client_id);
+        }
+      }
     }
 
     // Priority filter (label)
@@ -155,12 +179,14 @@ const getAll = async (req, res) => {
               comp.name as company_name,
               d.name as department_name,
               pm_user.name as project_manager_name,
-              pm_user.email as project_manager_email
+              pm_user.email as project_manager_email,
+              creator.name as created_by_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
        LEFT JOIN companies comp ON p.company_id = comp.id
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       LEFT JOIN users creator ON p.created_by = creator.id
        ${whereClause}
        ORDER BY ${sortColumn} ${sortDirection}`,
       params
@@ -213,12 +239,14 @@ const getById = async (req, res) => {
               c.company_name as client_name,
               comp.name as company_name,
               d.name as department_name,
-              pm_user.name as project_manager_name
+              pm_user.name as project_manager_name,
+              creator.name as created_by_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
        LEFT JOIN companies comp ON p.company_id = comp.id
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       LEFT JOIN users creator ON p.created_by = creator.id
        WHERE p.id = ? AND p.company_id = ? AND p.is_deleted = 0`,
       [id, companyId]
     );
@@ -255,6 +283,32 @@ const getById = async (req, res) => {
 };
 
 /**
+ * Generate unique project short code
+ */
+const generateShortCode = async (companyId) => {
+  try {
+    const [result] = await pool.execute(
+      `SELECT short_code FROM projects 
+       WHERE company_id = ? AND is_deleted = 0 
+       ORDER BY id DESC LIMIT 1`,
+      [companyId]
+    );
+    
+    let nextNum = 1;
+    if (result.length > 0 && result[0].short_code) {
+      const match = result[0].short_code.match(/PRJ-?(\d+)/i);
+      if (match && match[1]) {
+        nextNum = parseInt(match[1], 10) + 1;
+      }
+    }
+    
+    return `PRJ${String(nextNum).padStart(3, '0')}`;
+  } catch (error) {
+    return `PRJ${Date.now().toString().slice(-6)}`;
+  }
+};
+
+/**
  * Create project
  * POST /api/v1/projects
  */
@@ -267,13 +321,56 @@ const create = async (req, res) => {
       task_approval, label, project_members = [], status, progress
     } = req.body;
 
-    // Validation
-    if (!company_id || !short_code || !project_name || !start_date || !client_id || !project_manager_id) {
+    // Validation - only company_id and project_name are required
+    if (!company_id || !project_name) {
       return res.status(400).json({
         success: false,
-        error: 'company_id, short_code, project_name, start_date, client_id, and project_manager_id are required'
+        error: 'company_id and project_name are required'
       });
     }
+
+    // Validate client_id if provided
+    let validClientId = null;
+    if (client_id) {
+      // First try to find by client.id
+      const [clients] = await pool.execute(
+        'SELECT id FROM clients WHERE id = ? AND is_deleted = 0',
+        [client_id]
+      );
+      if (clients.length > 0) {
+        validClientId = clients[0].id;
+      } else {
+        // Try to find by owner_id (user_id)
+        const [clientsByOwner] = await pool.execute(
+          'SELECT id FROM clients WHERE owner_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1',
+          [client_id, company_id]
+        );
+        if (clientsByOwner.length > 0) {
+          validClientId = clientsByOwner[0].id;
+        } else {
+          console.log('Client ID not found in clients table:', client_id);
+          // Don't fail - just set to null
+        }
+      }
+    }
+
+    // Validate project_manager_id if provided
+    let validManagerId = null;
+    if (project_manager_id) {
+      const [users] = await pool.execute(
+        'SELECT id FROM users WHERE id = ? AND is_deleted = 0',
+        [project_manager_id]
+      );
+      if (users.length > 0) {
+        validManagerId = users[0].id;
+      }
+    }
+
+    // Generate short_code if not provided
+    const projectShortCode = short_code || await generateShortCode(company_id);
+    
+    // Get default start date if not provided
+    const projectStartDate = start_date || new Date().toISOString().split('T')[0];
 
     // Insert project
     const [result] = await pool.execute(
@@ -284,12 +381,12 @@ const create = async (req, res) => {
         task_approval, label, status, progress, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id, short_code, project_name, description || null, start_date, deadline,
+        company_id, projectShortCode, project_name, description || null, projectStartDate, deadline || null,
         no_deadline || 0, budget || null, project_category || null, project_sub_category || null,
-        department_id || null, client_id, project_manager_id, project_summary || null, notes || null,
+        department_id || null, validClientId, validManagerId, project_summary || null, notes || null,
         public_gantt_chart || 'enable', public_task_board || 'enable',
-        task_approval || 'disable', label || null, status || 'in progress',
-        progress || 0, req.userId || req.user?.id || 1
+        task_approval || 'disable', label || null, status || 'not started',
+        progress || 0, req.userId || req.user?.id || validManagerId || 1
       ]
     );
 
@@ -310,12 +407,14 @@ const create = async (req, res) => {
               c.company_name as client_name,
               comp.name as company_name,
               d.name as department_name,
-              pm_user.name as project_manager_name
+              pm_user.name as project_manager_name,
+              creator.name as created_by_name
        FROM projects p
        LEFT JOIN clients c ON p.client_id = c.id
        LEFT JOIN companies comp ON p.company_id = comp.id
        LEFT JOIN departments d ON p.department_id = d.id
        LEFT JOIN users pm_user ON p.project_manager_id = pm_user.id
+       LEFT JOIN users creator ON p.created_by = creator.id
        WHERE p.id = ?`,
       [projectId]
     );
@@ -329,7 +428,8 @@ const create = async (req, res) => {
     console.error('Create project error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create project'
+      error: 'Failed to create project',
+      details: error.message
     });
   }
 };

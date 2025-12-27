@@ -271,5 +271,347 @@ const create = async (req, res) => {
   }
 };
 
-module.exports = { getAll, create };
+/**
+ * Get event by ID
+ * GET /api/v1/events/:id
+ */
+const getById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    const [events] = await pool.execute(
+      `SELECT e.*, 
+              u.name as host_name,
+              u.email as host_email
+       FROM events e
+       LEFT JOIN users u ON e.host_id = u.id
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (events.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Event not found'
+      });
+    }
+
+    const event = events[0];
+
+    // Get departments
+    const [departments] = await pool.execute(
+      `SELECT d.id, d.name as department_name 
+       FROM event_departments ed
+       JOIN departments d ON ed.department_id = d.id
+       WHERE ed.event_id = ?`,
+      [event.id]
+    );
+    event.departments = departments;
+
+    // Get employees
+    const [employees] = await pool.execute(
+      `SELECT u.id, u.name, u.email 
+       FROM event_employees ee
+       JOIN users u ON ee.user_id = u.id
+       WHERE ee.event_id = ?`,
+      [event.id]
+    );
+    event.employees = employees;
+
+    // Get clients
+    try {
+      const [clients] = await pool.execute(
+        `SELECT c.id, c.company_name, u.email 
+         FROM event_clients ec
+         JOIN clients c ON ec.client_id = c.id
+         LEFT JOIN users u ON c.owner_id = u.id
+         WHERE ec.event_id = ?`,
+        [event.id]
+      );
+      event.clients = clients;
+    } catch (err) {
+      event.clients = [];
+    }
+
+    res.json({
+      success: true,
+      data: event
+    });
+  } catch (error) {
+    console.error('Get event by ID error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch event'
+    });
+  }
+};
+
+/**
+ * Update event
+ * PUT /api/v1/events/:id
+ */
+const update = async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    const userId = req.query.user_id || req.body.user_id || req.userId;
+
+    if (!companyId) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Check if event exists
+    const [existing] = await connection.execute(
+      `SELECT id FROM events WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (existing.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        error: 'Event not found'
+      });
+    }
+
+    const {
+      event_name,
+      label_color,
+      where: whereLocation,
+      description,
+      starts_on_date,
+      starts_on_time,
+      ends_on_date,
+      ends_on_time,
+      host_id,
+      status,
+      event_link,
+      department_ids,
+      employee_ids,
+      client_ids
+    } = req.body;
+
+    // Build update query
+    const updates = [];
+    const values = [];
+
+    if (event_name !== undefined) {
+      updates.push('event_name = ?');
+      values.push(event_name);
+    }
+    if (label_color !== undefined) {
+      updates.push('label_color = ?');
+      values.push(label_color);
+    }
+    if (whereLocation !== undefined) {
+      updates.push('`where` = ?');
+      values.push(whereLocation);
+    }
+    if (description !== undefined) {
+      updates.push('description = ?');
+      values.push(description);
+    }
+    if (starts_on_date !== undefined) {
+      updates.push('starts_on_date = ?');
+      values.push(starts_on_date);
+    }
+    if (starts_on_time !== undefined) {
+      updates.push('starts_on_time = ?');
+      values.push(starts_on_time);
+    }
+    if (ends_on_date !== undefined) {
+      updates.push('ends_on_date = ?');
+      values.push(ends_on_date);
+    }
+    if (ends_on_time !== undefined) {
+      updates.push('ends_on_time = ?');
+      values.push(ends_on_time);
+    }
+    if (host_id !== undefined) {
+      updates.push('host_id = ?');
+      values.push(host_id);
+    }
+    if (status !== undefined) {
+      updates.push('status = ?');
+      values.push(status);
+    }
+    if (event_link !== undefined) {
+      updates.push('event_link = ?');
+      values.push(event_link);
+    }
+
+    if (updates.length > 0) {
+      updates.push('updated_at = CURRENT_TIMESTAMP');
+      values.push(id);
+
+      await connection.execute(
+        `UPDATE events SET ${updates.join(', ')} WHERE id = ?`,
+        values
+      );
+    }
+
+    // Update departments if provided
+    if (department_ids !== undefined) {
+      await connection.execute('DELETE FROM event_departments WHERE event_id = ?', [id]);
+      if (department_ids.length > 0) {
+        for (const deptId of department_ids) {
+          await connection.execute(
+            'INSERT INTO event_departments (event_id, department_id) VALUES (?, ?)',
+            [id, deptId]
+          );
+        }
+      }
+    }
+
+    // Update employees if provided
+    if (employee_ids !== undefined) {
+      await connection.execute('DELETE FROM event_employees WHERE event_id = ?', [id]);
+      if (employee_ids.length > 0) {
+        for (const empId of employee_ids) {
+          await connection.execute(
+            'INSERT INTO event_employees (event_id, user_id) VALUES (?, ?)',
+            [id, empId]
+          );
+        }
+      }
+    }
+
+    // Update clients if provided
+    if (client_ids !== undefined) {
+      try {
+        await connection.execute('DELETE FROM event_clients WHERE event_id = ?', [id]);
+        if (client_ids.length > 0) {
+          for (const clientId of client_ids) {
+            await connection.execute(
+              'INSERT INTO event_clients (event_id, client_id) VALUES (?, ?)',
+              [id, clientId]
+            );
+          }
+        }
+      } catch (err) {
+        // event_clients table might not exist
+      }
+    }
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      message: 'Event updated successfully'
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error('Update event error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to update event'
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+/**
+ * Delete event (soft delete)
+ * DELETE /api/v1/events/:id
+ */
+const deleteEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    const [result] = await pool.execute(
+      `UPDATE events SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP 
+       WHERE id = ? AND company_id = ?`,
+      [id, companyId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Event not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Event deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete event error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete event'
+    });
+  }
+};
+
+/**
+ * Get upcoming events for user
+ * GET /api/v1/events/upcoming
+ */
+const getUpcoming = async (req, res) => {
+  try {
+    const companyId = req.query.company_id || req.companyId;
+    const userId = req.query.user_id || req.userId;
+    const limit = parseInt(req.query.limit) || 5;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+
+    const [events] = await pool.execute(
+      `SELECT e.*, 
+              u.name as host_name
+       FROM events e
+       LEFT JOIN users u ON e.host_id = u.id
+       WHERE e.company_id = ? 
+         AND e.is_deleted = 0 
+         AND e.starts_on_date >= ?
+       ORDER BY e.starts_on_date ASC, e.starts_on_time ASC
+       LIMIT ?`,
+      [companyId, today, limit]
+    );
+
+    res.json({
+      success: true,
+      data: events
+    });
+  } catch (error) {
+    console.error('Get upcoming events error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch upcoming events'
+    });
+  }
+};
+
+module.exports = { getAll, getById, create, update, delete: deleteEvent, getUpcoming };
 

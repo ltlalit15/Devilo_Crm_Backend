@@ -8,12 +8,42 @@ const pool = require('../config/db');
  * Generate invoice number
  */
 const generateInvoiceNumber = async (companyId) => {
-  const [result] = await pool.execute(
-    `SELECT COUNT(*) as count FROM invoices WHERE company_id = ?`,
-    [companyId]
-  );
-  const nextNum = (result[0].count || 0) + 1;
-  return `INV#${String(nextNum).padStart(3, '0')}`;
+  try {
+    // Find highest invoice number (include deleted to avoid duplicate key errors)
+    const [result] = await pool.execute(
+      `SELECT invoice_number FROM invoices 
+       WHERE company_id = ? AND invoice_number LIKE 'INV#%'
+       ORDER BY LENGTH(invoice_number) DESC, invoice_number DESC 
+       LIMIT 1`,
+      [companyId]
+    );
+    
+    let nextNum = 1;
+    if (result.length > 0 && result[0].invoice_number) {
+      const match = result[0].invoice_number.match(/INV#(\d+)/);
+      if (match && match[1]) {
+        nextNum = parseInt(match[1], 10) + 1;
+      }
+    }
+    
+    // Ensure uniqueness
+    let invoiceNumber = `INV#${String(nextNum).padStart(3, '0')}`;
+    let attempts = 0;
+    while (attempts < 100) {
+      const [existing] = await pool.execute(
+        `SELECT id FROM invoices WHERE invoice_number = ?`,
+        [invoiceNumber]
+      );
+      if (existing.length === 0) return invoiceNumber;
+      nextNum++;
+      invoiceNumber = `INV#${String(nextNum).padStart(3, '0')}`;
+      attempts++;
+    }
+    return `INV#${Date.now().toString().slice(-6)}`;
+  } catch (error) {
+    console.error('Error generating invoice number:', error);
+    return `INV#${Date.now().toString().slice(-6)}`;
+  }
 };
 
 /**
@@ -53,18 +83,17 @@ const getAll = async (req, res) => {
   try {
     const { status, client_id, search, start_date, end_date, project_id } = req.query;
 
-    // Admin must provide company_id - required for filtering
+    // company_id is optional - if not provided, return all invoices
     const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    if (!filterCompanyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id is required'
-      });
+    let whereClause = 'WHERE i.is_deleted = 0';
+    const params = [];
+    
+    // Filter by company_id only if provided
+    if (filterCompanyId) {
+      whereClause += ' AND i.company_id = ?';
+      params.push(filterCompanyId);
     }
-
-    let whereClause = 'WHERE i.company_id = ? AND i.is_deleted = 0';
-    const params = [filterCompanyId];
 
     // Status filter
     if (status && status !== 'All' && status !== 'all') {
@@ -267,8 +296,12 @@ const create = async (req, res) => {
       recurring_total_count, is_time_log_invoice, time_log_from, time_log_to
     } = req.body;
 
+    // Use company_id from body, or fallback to req.companyId
+    const effectiveCompanyId = company_id || req.companyId;
+
     // Validation
-    if (!company_id || !invoice_date || !due_date || !client_id || !items || items.length === 0) {
+    if (!effectiveCompanyId || !invoice_date || !due_date || !client_id || !items || items.length === 0) {
+      console.log('Invoice validation failed:', { company_id, effectiveCompanyId, invoice_date, due_date, client_id, items_length: items?.length });
       return res.status(400).json({
         success: false,
         error: 'company_id, invoice_date, due_date, client_id, and items are required'
@@ -276,7 +309,7 @@ const create = async (req, res) => {
     }
 
     // Generate invoice number
-    const invoice_number = await generateInvoiceNumber(req.companyId);
+    const invoice_number = await generateInvoiceNumber(effectiveCompanyId);
 
     // Calculate totals
     const totals = calculateTotals(items, discount, discount_type);
@@ -293,7 +326,7 @@ const create = async (req, res) => {
         time_log_from, time_log_to, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id ?? req.companyId ?? null,
+        effectiveCompanyId,
         invoice_number,
         invoice_date,
         due_date,
@@ -386,7 +419,8 @@ const create = async (req, res) => {
     console.error('Create invoice error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create invoice'
+      error: 'Failed to create invoice',
+      details: error.message
     });
   }
 };

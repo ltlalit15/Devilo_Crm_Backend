@@ -118,20 +118,13 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
-    const { title, category, description, company_id, user_id } = req.body;
+    const { title, name, category, description, company_id, user_id } = req.body;
     const file = req.file;
 
     if (!file) {
       return res.status(400).json({
         success: false,
         error: 'File is required'
-      });
-    }
-
-    if (!title) {
-      return res.status(400).json({
-        success: false,
-        error: 'Title is required'
       });
     }
 
@@ -143,6 +136,9 @@ const create = async (req, res) => {
     const fileName = file.originalname;
     const fileSize = file.size;
     const fileType = path.extname(fileName).toLowerCase();
+    
+    // Use title, name, or original filename as the document title
+    const documentTitle = title || name || fileName;
 
     const [result] = await pool.execute(
       `INSERT INTO documents (
@@ -151,7 +147,7 @@ const create = async (req, res) => {
       [
         companyId,
         userId, // Current user's documents
-        title,
+        documentTitle,
         category || null,
         filePath,
         fileName,

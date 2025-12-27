@@ -12,6 +12,8 @@ router.get('/employee', dashboardController.getEmployeeDashboard);
 router.get('/client', dashboardController.getClientDashboard);
 router.get('/client/work', dashboardController.getClientWork);
 router.get('/client/finance', dashboardController.getClientFinance);
+router.get('/client/announcements', dashboardController.getClientAnnouncements);
+router.get('/client/activity', dashboardController.getClientActivity);
 
 module.exports = router;
 

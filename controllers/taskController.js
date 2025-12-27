@@ -214,6 +214,24 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
+    console.log('=== CREATE TASK REQUEST ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('File:', req.file ? req.file.originalname : 'No file');
+    
+    // Parse JSON strings from FormData (multipart/form-data sends arrays as strings)
+    const parseJSON = (value, defaultValue = []) => {
+      if (Array.isArray(value)) return value;
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch (e) {
+          return defaultValue;
+        }
+      }
+      return defaultValue;
+    };
+    
     const {
       title,
       description,
@@ -225,24 +243,28 @@ const create = async (req, res) => {
       related_to_type, // project, client, lead
       points,
       assign_to,
-      collaborators = [],
       start_date,
       due_date,
       deadline,
       status,
       priority,
       estimated_time,
-      labels = [],
-      tags = [],
       is_recurring,
       recurring_frequency,
-      assigned_to = []
     } = req.body;
+    
+    // Parse arrays that might come as JSON strings from FormData
+    const collaborators = parseJSON(req.body.collaborators, []);
+    const labels = parseJSON(req.body.labels, []);
+    const tags = parseJSON(req.body.tags, []);
+    const assigned_to = parseJSON(req.body.assigned_to, []);
 
     // ===============================
     // VALIDATION
     // ===============================
-    if (!title) {
+    const taskTitle = title?.trim();
+    if (!taskTitle) {
+      console.log('Title validation failed. Received title:', title);
       return res.status(400).json({
         success: false,
         error: "title is required"
@@ -317,7 +339,7 @@ const create = async (req, res) => {
       [
         companyId,
         code,
-        title,
+        taskTitle,
         safeDescription,
         safeSubDescription,
         safeTaskCategory,
@@ -381,6 +403,25 @@ const create = async (req, res) => {
       await pool.query(
         `INSERT INTO task_tags (task_id, tag) VALUES ?`,
         [tagValues]
+      );
+    }
+
+    // ===============================
+    // HANDLE FILE UPLOAD (if present)
+    // ===============================
+    if (req.file) {
+      const file = req.file;
+      await pool.execute(
+        `INSERT INTO task_files (task_id, user_id, file_name, file_path, file_size, file_type)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          taskId,
+          req.userId || req.body.user_id || 1,
+          file.originalname,
+          file.path,
+          file.size,
+          file.mimetype
+        ]
       );
     }
 

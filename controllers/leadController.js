@@ -11,18 +11,17 @@ const pool = require('../config/db');
 const getAll = async (req, res) => {
   try {
     const { status, owner_id, source, city } = req.query;
-    // Admin must provide company_id - no default fallback
+    // company_id is optional - if not provided, return all leads
     const companyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id is required'
-      });
+    let whereClause = 'WHERE l.is_deleted = 0';
+    const params = [];
+    
+    // Filter by company_id only if provided
+    if (companyId) {
+      whereClause += ' AND l.company_id = ?';
+      params.push(companyId);
     }
-
-    let whereClause = 'WHERE l.company_id = ? AND l.is_deleted = 0';
-    const params = [companyId];
 
     if (status) {
       whereClause += ' AND l.status = ?';
