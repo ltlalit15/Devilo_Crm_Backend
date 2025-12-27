@@ -171,7 +171,19 @@ const logout = async (req, res) => {
  */
 const getCurrentUser = async (req, res) => {
   try {
-    const userId = req.query.user_id || req.body.user_id || 1;
+    // Get userId from JWT token (req.userId set by auth middleware) or from query/body
+    // DO NOT default to 1 - this was causing the bug!
+    const userId = req.userId || req.query.user_id || req.body.user_id;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is required. Please login again.'
+      });
+    }
+    
+    console.log('getCurrentUser - userId:', userId);
+    
     const [users] = await pool.execute(
       `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address,
               u.emergency_contact_name, u.emergency_contact_phone, u.emergency_contact_relation,

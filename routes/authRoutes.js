@@ -5,13 +5,16 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
+const { optionalAuth } = require('../middleware/auth');
 
-// No authentication required - all routes are public
+// Public routes - no authentication required
 router.post('/login', authController.login);
 router.post('/logout', authController.logout);
-router.get('/me', authController.getCurrentUser);
-router.put('/me', authController.updateCurrentUser);
-router.put('/change-password', authController.changePassword);
+
+// Routes that use optionalAuth - will get userId from JWT if token provided
+router.get('/me', optionalAuth, authController.getCurrentUser);
+router.put('/me', optionalAuth, authController.updateCurrentUser);
+router.put('/change-password', optionalAuth, authController.changePassword);
 
 module.exports = router;
 

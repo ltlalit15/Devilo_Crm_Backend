@@ -41,15 +41,17 @@ const getAllCompanies = async (req, res) => {
     `;
     const queryParams = [];
 
+    // By default, show only active (non-deleted) companies
+    if (status === 'deleted') {
+      query += ` AND c.is_deleted = 1`;
+    } else {
+      // Show active companies by default (when status is 'active' or not provided)
+      query += ` AND c.is_deleted = 0`;
+    }
+
     if (search) {
       query += ` AND (c.name LIKE ? OR c.industry LIKE ? OR c.website LIKE ?)`;
       queryParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-
-    if (status === 'active') {
-      query += ` AND c.is_deleted = 0`;
-    } else if (status === 'deleted') {
-      query += ` AND c.is_deleted = 1`;
     }
 
     // No pagination - return all companies

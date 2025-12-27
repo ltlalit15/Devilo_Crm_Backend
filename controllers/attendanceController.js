@@ -180,29 +180,51 @@ const getAttendancePercentage = async (req, res) => {
 
 const checkIn = async (req, res) => {
   try {
+    const companyId = req.body.company_id || req.query.company_id || req.companyId;
+    const userId = req.body.user_id || req.query.user_id || req.userId;
+    
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
+      });
+    }
+    
     const today = new Date().toISOString().split('T')[0];
     await pool.execute(
       `INSERT INTO attendance (company_id, user_id, date, check_in, status)
        VALUES (?, ?, ?, NOW(), 'Present')
        ON DUPLICATE KEY UPDATE check_in = NOW(), status = 'Present'`,
-      [req.companyId, req.userId, today]
+      [companyId, userId, today]
     );
     res.json({ success: true, message: 'Checked in successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to check in' });
+    console.error('Check in error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to check in' });
   }
 };
 
 const checkOut = async (req, res) => {
   try {
+    const companyId = req.body.company_id || req.query.company_id || req.companyId;
+    const userId = req.body.user_id || req.query.user_id || req.userId;
+    
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
+      });
+    }
+    
     const today = new Date().toISOString().split('T')[0];
     await pool.execute(
       `UPDATE attendance SET check_out = NOW() WHERE company_id = ? AND user_id = ? AND date = ?`,
-      [req.companyId, req.userId, today]
+      [companyId, userId, today]
     );
     res.json({ success: true, message: 'Checked out successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to check out' });
+    console.error('Check out error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to check out' });
   }
 };
 

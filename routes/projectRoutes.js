@@ -16,5 +16,10 @@ router.post('/:id/upload', uploadMultiple('file', 10), handleUploadError, projec
 router.put('/:id', projectController.update);
 router.delete('/:id', projectController.delete);
 
+// Project sub-resources
+router.get('/:id/members', projectController.getMembers);
+router.get('/:id/tasks', projectController.getTasks);
+router.get('/:id/files', projectController.getFiles);
+
 module.exports = router;
 

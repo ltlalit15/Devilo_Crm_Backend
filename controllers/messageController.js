@@ -14,14 +14,25 @@ const getAll = async (req, res) => {
     const companyId = req.query.company_id || req.body.company_id || 1;
     const conversationWith = req.query.conversation_with; // User ID to get conversation with
 
+    console.log('getAll messages - userId:', userId, 'companyId:', companyId, 'conversationWith:', conversationWith);
+
+    if (!userId || !companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'user_id and company_id are required'
+      });
+    }
+
     if (conversationWith) {
       // Get conversation between two users
       const [messages] = await pool.execute(
         `SELECT m.*, 
                 from_user.name as from_user_name,
                 from_user.email as from_user_email,
+                from_user.role as from_user_role,
                 to_user.name as to_user_name,
-                to_user.email as to_user_email
+                to_user.email as to_user_email,
+                to_user.role as to_user_role
          FROM messages m
          LEFT JOIN users from_user ON m.from_user_id = from_user.id
          LEFT JOIN users to_user ON m.to_user_id = to_user.id
@@ -33,40 +44,59 @@ const getAll = async (req, res) => {
         [companyId, userId, conversationWith, conversationWith, userId]
       );
 
+      console.log('Conversation messages found:', messages.length);
+
       return res.json({
         success: true,
         data: messages
       });
     }
 
-    // Get all conversations (grouped by other user)
+    // Get all conversations (grouped by other user) - Fixed to show latest message per conversation
     const [conversations] = await pool.execute(
       `SELECT 
-         CASE 
-           WHEN m.from_user_id = ? THEN m.to_user_id
-           ELSE m.from_user_id
-         END as other_user_id,
-         CASE 
-           WHEN m.from_user_id = ? THEN u_to.name
-           ELSE u_from.name
-         END as other_user_name,
-         CASE 
-           WHEN m.from_user_id = ? THEN u_to.email
-           ELSE u_from.email
-         END as other_user_email,
-         m.message as last_message,
-         m.created_at as last_message_time,
-         SUM(CASE WHEN m.to_user_id = ? AND m.is_read = 0 THEN 1 ELSE 0 END) as unread_count
-       FROM messages m
-       LEFT JOIN users u_from ON m.from_user_id = u_from.id
-       LEFT JOIN users u_to ON m.to_user_id = u_to.id
-       WHERE m.company_id = ? 
-         AND m.is_deleted = 0
-         AND (m.from_user_id = ? OR m.to_user_id = ?)
-       GROUP BY other_user_id, other_user_name, other_user_email, last_message, last_message_time
+         other_user_id,
+         other_user_name,
+         other_user_email,
+         other_user_role,
+         last_message,
+         last_message_time,
+         unread_count
+       FROM (
+         SELECT 
+           CASE 
+             WHEN m.from_user_id = ? THEN m.to_user_id
+             ELSE m.from_user_id
+           END as other_user_id,
+           CASE 
+             WHEN m.from_user_id = ? THEN u_to.name
+             ELSE u_from.name
+           END as other_user_name,
+           CASE 
+             WHEN m.from_user_id = ? THEN u_to.email
+             ELSE u_from.email
+           END as other_user_email,
+           CASE 
+             WHEN m.from_user_id = ? THEN u_to.role
+             ELSE u_from.role
+           END as other_user_role,
+           m.message as last_message,
+           m.created_at as last_message_time,
+           (SELECT COUNT(*) FROM messages WHERE to_user_id = ? AND from_user_id = other_user_id AND is_read = 0 AND is_deleted = 0) as unread_count,
+           ROW_NUMBER() OVER (PARTITION BY other_user_id ORDER BY m.created_at DESC) as rn
+         FROM messages m
+         LEFT JOIN users u_from ON m.from_user_id = u_from.id
+         LEFT JOIN users u_to ON m.to_user_id = u_to.id
+         WHERE m.company_id = ? 
+           AND m.is_deleted = 0
+           AND (m.from_user_id = ? OR m.to_user_id = ?)
+       ) as conversations
+       WHERE rn = 1
        ORDER BY last_message_time DESC`,
-      [userId, userId, userId, userId, companyId, userId, userId]
+      [userId, userId, userId, userId, userId, companyId, userId, userId]
     );
+
+    console.log('Conversations found:', conversations.length);
 
     res.json({
       success: true,
@@ -74,9 +104,13 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get messages error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch messages'
+      error: error.sqlMessage || error.message || 'Failed to fetch messages'
     });
   }
 };
@@ -139,9 +173,18 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
-    const { to_user_id, subject, message, file_path } = req.body;
-    const userId = req.userId;
-    const companyId = req.companyId;
+    const { to_user_id, subject, message, file_path, user_id, company_id } = req.body;
+    const userId = user_id || req.userId || req.query.user_id;
+    const companyId = company_id || req.companyId || req.query.company_id;
+
+    console.log('Create message - userId:', userId, 'companyId:', companyId, 'to_user_id:', to_user_id);
+
+    if (!userId || !companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'user_id and company_id are required'
+      });
+    }
 
     if (!to_user_id || !message) {
       return res.status(400).json({
@@ -152,22 +195,24 @@ const create = async (req, res) => {
 
     // Verify recipient exists and belongs to same company
     const [recipients] = await pool.execute(
-      `SELECT id FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      `SELECT id, role FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0`,
       [to_user_id, companyId]
     );
 
     if (recipients.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Recipient not found'
+        error: 'Recipient not found or does not belong to your company'
       });
     }
 
     const [result] = await pool.execute(
-      `INSERT INTO messages (company_id, from_user_id, to_user_id, subject, message, file_path)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [companyId, userId, to_user_id, subject || 'No Subject', message, file_path || null]
+      `INSERT INTO messages (company_id, from_user_id, to_user_id, subject, message, file_path, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+      [companyId, userId, to_user_id, subject || 'Chat Message', message, file_path || null]
     );
+
+    console.log('Message created with ID:', result.insertId);
 
     res.status(201).json({
       success: true,
@@ -176,9 +221,13 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Send message error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage
+    });
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to send message'
+      error: error.sqlMessage || error.message || 'Failed to send message'
     });
   }
 };
@@ -277,10 +326,105 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+/**
+ * Get available users to message (role-based)
+ * GET /api/v1/messages/available-users
+ */
+const getAvailableUsers = async (req, res) => {
+  try {
+    const userId = req.query.user_id || req.body.user_id;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    const userRole = req.query.user_role || req.body.user_role;
+    
+    if (!userId || !companyId || !userRole) {
+      return res.status(400).json({
+        success: false,
+        error: 'user_id, company_id, and user_role are required'
+      });
+    }
+
+    let availableUsers = [];
+
+    // ROLE-BASED LOGIC
+    if (userRole === 'SUPERADMIN') {
+      // SuperAdmin has NO messaging
+      return res.json({
+        success: true,
+        data: [],
+        message: 'SuperAdmin cannot use messaging system'
+      });
+    }
+    
+    else if (userRole === 'ADMIN') {
+      // Admin can message their own Clients and Employees
+      const [users] = await pool.execute(
+        `SELECT u.id, 
+                u.name, 
+                u.email, 
+                u.role,
+                u.name as display_name,
+                CASE 
+                  WHEN u.role = 'CLIENT' THEN 'Client'
+                  WHEN u.role = 'EMPLOYEE' THEN 'Employee'
+                  ELSE u.role
+                END as role_display
+         FROM users u
+         WHERE u.company_id = ? 
+           AND u.id != ?
+           AND u.role IN ('CLIENT', 'EMPLOYEE')
+           AND u.is_deleted = 0
+         ORDER BY u.role, u.name`,
+        [companyId, userId]
+      );
+      availableUsers = users;
+    }
+    
+    else if (userRole === 'CLIENT') {
+      // Client can ONLY message Admin users of their company
+      const [users] = await pool.execute(
+        `SELECT u.id, u.name, u.email, u.role
+         FROM users u
+         WHERE u.company_id = ? 
+           AND u.role = 'ADMIN'
+           AND u.is_deleted = 0
+         ORDER BY u.name`,
+        [companyId]
+      );
+      availableUsers = users;
+    }
+    
+    else if (userRole === 'EMPLOYEE') {
+      // Employee can ONLY message Admin users of their company
+      const [users] = await pool.execute(
+        `SELECT u.id, u.name, u.email, u.role
+         FROM users u
+         WHERE u.company_id = ? 
+           AND u.role = 'ADMIN'
+           AND u.is_deleted = 0
+         ORDER BY u.name`,
+        [companyId]
+      );
+      availableUsers = users;
+    }
+
+    res.json({
+      success: true,
+      data: availableUsers
+    });
+  } catch (error) {
+    console.error('Get available users error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch available users'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
   create,
   update,
-  deleteMessage
+  deleteMessage,
+  getAvailableUsers
 };

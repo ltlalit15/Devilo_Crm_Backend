@@ -40,12 +40,22 @@ const getAll = async (req, res) => {
     }
 
     // Get all clients without pagination
-    // Include email from users table (owner) since clients table doesn't have email directly
+    // Include client's actual name and email from users table
     const [clients] = await pool.execute(
       `SELECT c.*, 
+              u.name as client_name,
+              u.name as name,
+              c.company_name,
+              c.phone_number as phone,
               u.name as owner_name, 
               u.email as email,
-              comp.name as admin_company_name
+              comp.name as admin_company_name,
+              (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.is_deleted = 0) as total_projects,
+              (SELECT COALESCE(SUM(total), 0) FROM invoices i WHERE i.client_id = c.id AND i.is_deleted = 0) as total_invoiced,
+              (SELECT COALESCE(SUM(p.amount), 0) 
+               FROM payments p 
+               INNER JOIN invoices i ON p.invoice_id = i.id 
+               WHERE i.client_id = c.id AND p.is_deleted = 0) as payment_received
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
        LEFT JOIN companies comp ON c.company_id = comp.id
@@ -54,29 +64,18 @@ const getAll = async (req, res) => {
       params
     );
 
-    // Get contacts, groups, and labels for each client
-    // Map company_name to client_name for consistency
+    // Calculate due amount for each client
     for (let client of clients) {
-      // Map c.company_name (client's company name) to client_name
-      client.client_name = client.company_name;
-      
+      client.due = (parseFloat(client.total_invoiced) || 0) - (parseFloat(client.payment_received) || 0);
+    }
+
+    // Get contacts for each client (groups and labels removed)
+    for (let client of clients) {
       const [contacts] = await pool.execute(
         `SELECT * FROM client_contacts WHERE client_id = ? AND is_deleted = 0`,
         [client.id]
       );
       client.contacts = contacts;
-
-      const [groups] = await pool.execute(
-        `SELECT group_name FROM client_groups WHERE client_id = ?`,
-        [client.id]
-      );
-      client.groups = groups.map(g => g.group_name);
-
-      const [labels] = await pool.execute(
-        `SELECT label FROM client_labels WHERE client_id = ?`,
-        [client.id]
-      );
-      client.labels = labels.map(l => l.label);
     }
 
     res.json({
@@ -112,12 +111,22 @@ const getById = async (req, res) => {
         error: 'company_id is required'
       });
     }
-    // Include email from users table (owner) since clients table doesn't have email directly
+    // Get client with actual client name from users table
     const [clients] = await pool.execute(
       `SELECT c.*, 
+              u.name as client_name,
+              u.name as name,
+              c.company_name,
+              c.phone_number as phone,
               u.name as owner_name, 
               u.email as email,
-              comp.name as admin_company_name
+              comp.name as admin_company_name,
+              (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.is_deleted = 0) as total_projects,
+              (SELECT COALESCE(SUM(total), 0) FROM invoices i WHERE i.client_id = c.id AND i.is_deleted = 0) as total_invoiced,
+              (SELECT COALESCE(SUM(p.amount), 0) 
+               FROM payments p 
+               INNER JOIN invoices i ON p.invoice_id = i.id 
+               WHERE i.client_id = c.id AND p.is_deleted = 0) as payment_received
        FROM clients c
        LEFT JOIN users u ON c.owner_id = u.id
        LEFT JOIN companies comp ON c.company_id = comp.id
@@ -133,9 +142,9 @@ const getById = async (req, res) => {
     }
 
     const client = clients[0];
-
-    // Map c.company_name (client's company name) to client_name
-    client.client_name = client.company_name;
+    
+    // Calculate due amount
+    client.due = (parseFloat(client.total_invoiced) || 0) - (parseFloat(client.payment_received) || 0);
 
     // Get contacts
     const [contacts] = await pool.execute(
@@ -143,20 +152,6 @@ const getById = async (req, res) => {
       [client.id]
     );
     client.contacts = contacts;
-
-    // Get groups
-    const [groups] = await pool.execute(
-      `SELECT group_name FROM client_groups WHERE client_id = ?`,
-      [client.id]
-    );
-    client.groups = groups.map(g => g.group_name);
-
-    // Get labels
-    const [labels] = await pool.execute(
-      `SELECT label FROM client_labels WHERE client_id = ?`,
-      [client.id]
-    );
-    client.labels = labels.map(l => l.label);
 
     res.json({
       success: true,
@@ -184,7 +179,7 @@ const create = async (req, res) => {
       client_name, company_name, email, password, address, city, state, zip,
       country, phone_country_code, phone_number, website, vat_number,
       gst_number, currency, currency_symbol, disable_online_payment,
-      status, groups = [], labels = []
+      status
     } = req.body;
 
     // Use client_name if provided, otherwise fallback to company_name for backward compatibility
@@ -258,26 +253,6 @@ const create = async (req, res) => {
 
     const clientId = result.insertId;
 
-    // Insert groups
-    if (groups.length > 0) {
-      for (const groupName of groups) {
-        await connection.execute(
-          `INSERT INTO client_groups (client_id, group_name) VALUES (?, ?)`,
-          [clientId, groupName]
-        );
-      }
-    }
-
-    // Insert labels
-    if (labels.length > 0) {
-      for (const label of labels) {
-        await connection.execute(
-          `INSERT INTO client_labels (client_id, label) VALUES (?, ?)`,
-          [clientId, label]
-        );
-      }
-    }
-
     await connection.commit();
     connection.release();
 
@@ -292,22 +267,6 @@ const create = async (req, res) => {
     );
 
     const client = clients[0];
-
-    // Map c.company_name (client's company name) to client_name
-    client.client_name = client.company_name;
-
-    // Get groups and labels for the created client (same as GET)
-    const [clientGroups] = await pool.execute(
-      `SELECT group_name FROM client_groups WHERE client_id = ?`,
-      [clientId]
-    );
-    client.groups = clientGroups.map(g => g.group_name);
-
-    const [clientLabels] = await pool.execute(
-      `SELECT label FROM client_labels WHERE client_id = ?`,
-      [clientId]
-    );
-    client.labels = clientLabels.map(l => l.label);
 
     // Get contacts
     const [contacts] = await pool.execute(

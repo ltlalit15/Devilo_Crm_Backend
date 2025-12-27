@@ -22,6 +22,7 @@ const getAll = async (req, res) => {
       project_category,
       assigned_user_id,
       project_manager_id,
+      member_user_id,
       start_date,
       end_date,
       sort_by = 'created_at',
@@ -76,8 +77,15 @@ const getAll = async (req, res) => {
       params.push(project_type || project_category, project_type || project_category);
     }
 
+    // Member user filter - Only projects where user is a team member
+    if (member_user_id) {
+      whereClause += ` AND (p.project_manager_id = ? OR EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?
+      ))`;
+      params.push(member_user_id, member_user_id);
+    }
     // Assigned user filter (project manager or team member)
-    if (assigned_user_id || project_manager_id) {
+    else if (assigned_user_id || project_manager_id) {
       const userId = assigned_user_id || project_manager_id;
       whereClause += ` AND (p.project_manager_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?
@@ -630,6 +638,211 @@ const uploadFile = async (req, res) => {
   }
 };
 
+/**
+ * Get project members
+ * GET /api/v1/projects/:id/members
+ */
+const getMembers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.companyId;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Check if project exists
+    const [projects] = await pool.execute(
+      `SELECT id FROM projects WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (projects.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    // Get members
+    const [members] = await pool.execute(
+      `SELECT u.id, u.name, u.email, u.avatar, u.role
+       FROM project_members pm
+       JOIN users u ON pm.user_id = u.id
+       WHERE pm.project_id = ?
+       ORDER BY u.name`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      data: members
+    });
+  } catch (error) {
+    console.error('Get project members error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch project members'
+    });
+  }
+};
+
+/**
+ * Get project tasks
+ * GET /api/v1/projects/:id/tasks
+ */
+const getTasks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.companyId;
+    const { status, assigned_to, priority } = req.query;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Check if project exists
+    const [projects] = await pool.execute(
+      `SELECT id FROM projects WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (projects.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    let whereClause = 'WHERE t.project_id = ? AND t.company_id = ? AND t.is_deleted = 0';
+    const params = [id, companyId];
+
+    if (status) {
+      whereClause += ' AND t.status = ?';
+      params.push(status);
+    }
+    if (priority) {
+      whereClause += ' AND t.priority = ?';
+      params.push(priority);
+    }
+    if (assigned_to) {
+      whereClause += ` AND t.id IN (SELECT task_id FROM task_assignees WHERE user_id = ?)`;
+      params.push(assigned_to);
+    }
+
+    // Get tasks
+    const [tasks] = await pool.execute(
+      `SELECT t.*, p.project_name
+       FROM tasks t
+       LEFT JOIN projects p ON t.project_id = p.id
+       ${whereClause}
+       ORDER BY t.created_at DESC`,
+      params
+    );
+
+    // Get assignees for each task
+    for (let task of tasks) {
+      const [assignees] = await pool.execute(
+        `SELECT u.id, u.name, u.email FROM task_assignees ta
+         JOIN users u ON ta.user_id = u.id
+         WHERE ta.task_id = ?`,
+        [task.id]
+      );
+      task.assigned_to = assignees;
+    }
+
+    res.json({
+      success: true,
+      data: tasks
+    });
+  } catch (error) {
+    console.error('Get project tasks error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch project tasks'
+    });
+  }
+};
+
+/**
+ * Get project files
+ * GET /api/v1/projects/:id/files
+ */
+const getFiles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.companyId;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Check if project exists
+    const [projects] = await pool.execute(
+      `SELECT id FROM projects WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (projects.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    // Try project_files table first, fallback to documents table
+    try {
+      const [files] = await pool.execute(
+        `SELECT pf.*, u.name as user_name
+         FROM project_files pf
+         LEFT JOIN users u ON pf.user_id = u.id
+         WHERE pf.project_id = ? AND (pf.is_deleted = 0 OR pf.is_deleted IS NULL)
+         ORDER BY pf.created_at DESC`,
+        [id]
+      );
+      
+      res.json({
+        success: true,
+        data: files
+      });
+    } catch (tableError) {
+      if (tableError.code === 'ER_NO_SUCH_TABLE') {
+        // Fallback to documents table
+        const [files] = await pool.execute(
+          `SELECT d.*, u.name as user_name
+           FROM documents d
+           LEFT JOIN users u ON d.created_by = u.id
+           WHERE d.related_id = ? AND d.related_type = 'project' AND d.is_deleted = 0
+           ORDER BY d.created_at DESC`,
+          [id]
+        );
+        
+        res.json({
+          success: true,
+          data: files
+        });
+      } else {
+        throw tableError;
+      }
+    }
+  } catch (error) {
+    console.error('Get project files error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch project files'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -637,6 +850,9 @@ module.exports = {
   update,
   delete: deleteProject,
   getFilters,
-  uploadFile
+  uploadFile,
+  getMembers,
+  getTasks,
+  getFiles
 };
 

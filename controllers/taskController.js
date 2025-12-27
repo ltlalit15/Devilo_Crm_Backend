@@ -45,7 +45,7 @@ const generateTaskCode = async (projectId, companyId) => {
  */
 const getAll = async (req, res) => {
   try {
-    const { status, project_id, assigned_to } = req.query;
+    const { status, project_id, assigned_to, due_date, start_date, priority, search } = req.query;
 
     // Admin must provide company_id - required for filtering
     const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
@@ -73,6 +73,23 @@ const getAll = async (req, res) => {
         SELECT task_id FROM task_assignees WHERE user_id = ?
       )`;
       params.push(assigned_to);
+    }
+    if (due_date) {
+      whereClause += ' AND DATE(t.due_date) = ?';
+      params.push(due_date);
+    }
+    if (start_date) {
+      whereClause += ' AND DATE(t.start_date) = ?';
+      params.push(start_date);
+    }
+    if (priority) {
+      whereClause += ' AND t.priority = ?';
+      params.push(priority);
+    }
+    if (search) {
+      whereClause += ' AND (t.title LIKE ? OR t.description LIKE ? OR t.task_code LIKE ?)';
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern);
     }
 
     // Get all tasks without pagination
@@ -199,17 +216,27 @@ const create = async (req, res) => {
   try {
     const {
       title,
+      description,
       sub_description,
       task_category,
       project_id,
+      client_id,
+      lead_id,
+      related_to_type, // project, client, lead
+      points,
+      assign_to,
+      collaborators = [],
       start_date,
       due_date,
+      deadline,
       status,
       priority,
       estimated_time,
-      description,
-      assigned_to = [],
-      tags = []
+      labels = [],
+      tags = [],
+      is_recurring,
+      recurring_frequency,
+      assigned_to = []
     } = req.body;
 
     // ===============================
@@ -223,17 +250,36 @@ const create = async (req, res) => {
     }
 
     // ===============================
-    // SAFE NULL HANDLING
+    // SAFE NULL HANDLING - All 13 Fields
     // ===============================
     const safeSubDescription = sub_description ?? null;
     const safeTaskCategory = task_category ?? null;
-    const safeProjectId = project_id ?? null;
-    const safeStartDate = start_date ?? null;
-    const safeDueDate = due_date ?? null;
-    const safePriority = priority ?? null;
-    const safeEstimatedTime = estimated_time ?? null;
     const safeDescription = description ?? null;
-    const safeStatus = status || "Incomplete";
+    
+    // Related To - determine based on type
+    let safeProjectId = project_id ?? null;
+    let safeClientId = client_id ?? null;
+    let safeLeadId = lead_id ?? null;
+    
+    if (related_to_type) {
+      if (related_to_type === 'project' && req.body.related_to) {
+        safeProjectId = req.body.related_to;
+      } else if (related_to_type === 'client' && req.body.related_to) {
+        safeClientId = req.body.related_to;
+      } else if (related_to_type === 'lead' && req.body.related_to) {
+        safeLeadId = req.body.related_to;
+      }
+    }
+    
+    const safePoints = points || 1;
+    const safeStartDate = start_date ?? null;
+    const safeDeadline = deadline ?? (due_date ?? null);
+    const safeDueDate = deadline ?? (due_date ?? null);
+    const safePriority = priority || 'Medium';
+    const safeEstimatedTime = estimated_time ?? null;
+    const safeStatus = status || "To do";
+    const safeIsRecurring = is_recurring ? 1 : 0;
+    const safeRecurringFrequency = recurring_frequency ?? null;
 
     // ===============================
     // GENERATE TASK CODE
@@ -248,7 +294,7 @@ const create = async (req, res) => {
     const code = await generateTaskCode(safeProjectId, companyId);
 
     // ===============================
-    // INSERT TASK
+    // INSERT TASK - Updated with new fields
     // ===============================
     const [result] = await pool.execute(
       `
@@ -256,6 +302,7 @@ const create = async (req, res) => {
         company_id,
         code,
         title,
+        description,
         sub_description,
         task_category,
         project_id,
@@ -264,7 +311,6 @@ const create = async (req, res) => {
         status,
         priority,
         estimated_time,
-        description,
         created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
@@ -272,27 +318,47 @@ const create = async (req, res) => {
         companyId,
         code,
         title,
+        safeDescription,
         safeSubDescription,
         safeTaskCategory,
         safeProjectId,
         safeStartDate,
-        safeDueDate,
+        safeDeadline,
         safeStatus,
         safePriority,
         safeEstimatedTime,
-        safeDescription,
-        req.userId
+        req.userId || req.body.user_id || 1
       ]
     );
 
     const taskId = result.insertId;
 
     // ===============================
-    // INSERT ASSIGNEES
+    // INSERT ASSIGNEES (Assign To + Collaborators)
     // ===============================
+    const allAssignees = [];
+    if (assign_to) {
+      allAssignees.push(parseInt(assign_to));
+    }
+    if (Array.isArray(collaborators) && collaborators.length > 0) {
+      collaborators.forEach(userId => {
+        const uid = parseInt(userId);
+        if (!allAssignees.includes(uid)) {
+          allAssignees.push(uid);
+        }
+      });
+    }
     if (Array.isArray(assigned_to) && assigned_to.length > 0) {
-      const assigneeValues = assigned_to.map(userId => [taskId, userId]);
+      assigned_to.forEach(userId => {
+        const uid = parseInt(userId);
+        if (!allAssignees.includes(uid)) {
+          allAssignees.push(uid);
+        }
+      });
+    }
 
+    if (allAssignees.length > 0) {
+      const assigneeValues = allAssignees.map(userId => [taskId, userId]);
       await pool.query(
         `INSERT INTO task_assignees (task_id, user_id) VALUES ?`,
         [assigneeValues]
@@ -300,11 +366,18 @@ const create = async (req, res) => {
     }
 
     // ===============================
-    // INSERT TAGS
+    // INSERT TAGS/LABELS
     // ===============================
+    const allTags = [];
+    if (Array.isArray(labels) && labels.length > 0) {
+      allTags.push(...labels);
+    }
     if (Array.isArray(tags) && tags.length > 0) {
-      const tagValues = tags.map(tag => [taskId, tag]);
+      allTags.push(...tags);
+    }
 
+    if (allTags.length > 0) {
+      const tagValues = allTags.map(tag => [taskId, tag]);
       await pool.query(
         `INSERT INTO task_tags (task_id, tag) VALUES ?`,
         [tagValues]
@@ -327,9 +400,14 @@ const create = async (req, res) => {
 
   } catch (error) {
     console.error("Create task error:", error);
+    console.error("Error details:", {
+      message: error.message,
+      sqlMessage: error.sqlMessage,
+      code: error.code
+    });
     res.status(500).json({
       success: false,
-      error: "Failed to create task"
+      error: error.sqlMessage || error.message || "Failed to create task"
     });
   }
 };
@@ -356,11 +434,11 @@ const update = async (req, res) => {
       });
     }
 
-    // Build update query
+    // Build update query - Updated with new fields
     const allowedFields = [
-      'title', 'sub_description', 'task_category', 'project_id', 'company_id',
-      'start_date', 'due_date', 'status', 'priority', 'estimated_time',
-      'description', 'completed_on'
+      'title', 'description', 'sub_description', 'task_category', 'project_id', 
+      'company_id', 'start_date', 'due_date', 'deadline', 'status', 'priority', 
+      'estimated_time', 'completed_on', 'points'
     ];
 
     const updates = [];
@@ -369,7 +447,12 @@ const update = async (req, res) => {
     for (const field of allowedFields) {
       if (updateFields.hasOwnProperty(field)) {
         updates.push(`${field} = ?`);
-        values.push(updateFields[field]);
+        // Handle deadline mapping to due_date
+        if (field === 'deadline') {
+          values.push(updateFields['deadline']);
+        } else {
+          values.push(updateFields[field]);
+        }
       }
     }
 
@@ -383,11 +466,33 @@ const update = async (req, res) => {
       );
     }
 
-    // Update assignees if provided
-    if (updateFields.assigned_to) {
+    // Update assignees if provided (assign_to + collaborators)
+    if (updateFields.assign_to || updateFields.collaborators || updateFields.assigned_to) {
       await pool.execute(`DELETE FROM task_assignees WHERE task_id = ?`, [id]);
-      if (updateFields.assigned_to.length > 0) {
-        const assigneeValues = updateFields.assigned_to.map(userId => [id, userId]);
+      
+      const allAssignees = [];
+      if (updateFields.assign_to) {
+        allAssignees.push(parseInt(updateFields.assign_to));
+      }
+      if (Array.isArray(updateFields.collaborators) && updateFields.collaborators.length > 0) {
+        updateFields.collaborators.forEach(userId => {
+          const uid = parseInt(userId);
+          if (!allAssignees.includes(uid)) {
+            allAssignees.push(uid);
+          }
+        });
+      }
+      if (Array.isArray(updateFields.assigned_to) && updateFields.assigned_to.length > 0) {
+        updateFields.assigned_to.forEach(userId => {
+          const uid = parseInt(userId);
+          if (!allAssignees.includes(uid)) {
+            allAssignees.push(uid);
+          }
+        });
+      }
+
+      if (allAssignees.length > 0) {
+        const assigneeValues = allAssignees.map(userId => [id, userId]);
         await pool.query(
           `INSERT INTO task_assignees (task_id, user_id) VALUES ?`,
           [assigneeValues]
@@ -395,11 +500,20 @@ const update = async (req, res) => {
       }
     }
 
-    // Update tags if provided
-    if (updateFields.tags) {
+    // Update tags/labels if provided
+    if (updateFields.tags || updateFields.labels) {
       await pool.execute(`DELETE FROM task_tags WHERE task_id = ?`, [id]);
-      if (updateFields.tags.length > 0) {
-        const tagValues = updateFields.tags.map(tag => [id, tag]);
+      
+      const allTags = [];
+      if (Array.isArray(updateFields.labels) && updateFields.labels.length > 0) {
+        allTags.push(...updateFields.labels);
+      }
+      if (Array.isArray(updateFields.tags) && updateFields.tags.length > 0) {
+        allTags.push(...updateFields.tags);
+      }
+
+      if (allTags.length > 0) {
+        const tagValues = allTags.map(tag => [id, tag]);
         await pool.query(
           `INSERT INTO task_tags (task_id, tag) VALUES ?`,
           [tagValues]
@@ -420,9 +534,13 @@ const update = async (req, res) => {
     });
   } catch (error) {
     console.error('Update task error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage
+    });
     res.status(500).json({
       success: false,
-      error: 'Failed to update task'
+      error: error.sqlMessage || error.message || 'Failed to update task'
     });
   }
 };

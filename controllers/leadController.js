@@ -1007,7 +1007,7 @@ const createContact = async (req, res) => {
     });
     res.status(500).json({
       success: false,
-      error: 'Failed to create contact',
+      error: error.sqlMessage || error.message || 'Failed to create contact',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -1126,6 +1126,216 @@ const deleteContact = async (req, res) => {
   }
 };
 
+/**
+ * Get all unique labels for a company
+ * GET /api/v1/leads/labels
+ */
+const getAllLabels = async (req, res) => {
+  try {
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Get all unique labels from leads in this company
+    const [labels] = await pool.execute(
+      `SELECT DISTINCT ll.label, ll.id, ll.created_at
+       FROM lead_labels ll
+       INNER JOIN leads l ON ll.lead_id = l.id
+       WHERE l.company_id = ? AND l.is_deleted = 0
+       ORDER BY ll.label ASC`,
+      [companyId]
+    );
+
+    res.json({
+      success: true,
+      data: labels
+    });
+  } catch (error) {
+    console.error('Get labels error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch labels'
+    });
+  }
+};
+
+/**
+ * Create a new label (adds to label pool)
+ * POST /api/v1/leads/labels
+ */
+const createLabel = async (req, res) => {
+  try {
+    const { label, lead_id } = req.body;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!label) {
+      return res.status(400).json({
+        success: false,
+        error: 'Label name is required'
+      });
+    }
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // If lead_id is provided, add label to that lead
+    if (lead_id) {
+      // Check if lead exists and belongs to company
+      const [leads] = await pool.execute(
+        `SELECT id FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+        [lead_id, companyId]
+      );
+
+      if (leads.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Lead not found'
+        });
+      }
+
+      // Check if label already exists for this lead
+      const [existing] = await pool.execute(
+        `SELECT id FROM lead_labels WHERE lead_id = ? AND label = ?`,
+        [lead_id, label]
+      );
+
+      if (existing.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Label already exists for this lead'
+        });
+      }
+
+      // Insert label
+      await pool.execute(
+        `INSERT INTO lead_labels (lead_id, label) VALUES (?, ?)`,
+        [lead_id, label]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Label created successfully',
+      data: { label }
+    });
+  } catch (error) {
+    console.error('Create label error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to create label'
+    });
+  }
+};
+
+/**
+ * Delete a label (removes from all leads in company)
+ * DELETE /api/v1/leads/labels/:label
+ */
+const deleteLabel = async (req, res) => {
+  try {
+    const { label } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Delete label from all leads in this company
+    await pool.execute(
+      `DELETE ll FROM lead_labels ll
+       INNER JOIN leads l ON ll.lead_id = l.id
+       WHERE ll.label = ? AND l.company_id = ?`,
+      [label, companyId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Label deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete label error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete label'
+    });
+  }
+};
+
+/**
+ * Update labels for a specific lead
+ * PUT /api/v1/leads/:id/labels
+ */
+const updateLeadLabels = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { labels } = req.body;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    if (!Array.isArray(labels)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Labels must be an array'
+      });
+    }
+
+    // Check if lead exists
+    const [leads] = await pool.execute(
+      `SELECT id FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (leads.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Lead not found'
+      });
+    }
+
+    // Delete existing labels
+    await pool.execute(`DELETE FROM lead_labels WHERE lead_id = ?`, [id]);
+
+    // Insert new labels
+    if (labels.length > 0) {
+      const labelValues = labels.map(label => [id, label]);
+      await pool.query(
+        `INSERT INTO lead_labels (lead_id, label) VALUES ?`,
+        [labelValues]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Lead labels updated successfully',
+      data: { labels }
+    });
+  } catch (error) {
+    console.error('Update lead labels error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to update lead labels'
+    });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -1137,6 +1347,10 @@ module.exports = {
   updateStatus,
   bulkAction,
   getAllContacts,
+  getAllLabels,
+  createLabel,
+  deleteLabel,
+  updateLeadLabels,
   getContactById,
   createContact,
   updateContact,
