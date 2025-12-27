@@ -59,7 +59,7 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS
-import cors from "cors";
+
 
 app.use(
   cors({
