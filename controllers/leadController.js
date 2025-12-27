@@ -1007,7 +1007,11 @@ const createContact = async (req, res) => {
     });
     res.status(500).json({
       success: false,
+<<<<<<< HEAD
       error: error.sqlMessage || error.message || 'Failed to create contact',
+=======
+      error: 'Failed to create contact',
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -1126,6 +1130,7 @@ const deleteContact = async (req, res) => {
   }
 };
 
+<<<<<<< HEAD
 /**
  * Get all unique labels for a company
  * GET /api/v1/leads/labels
@@ -1336,6 +1341,8 @@ const updateLeadLabels = async (req, res) => {
   }
 };
 
+=======
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 module.exports = {
   getAll,
   getById,
@@ -1347,10 +1354,13 @@ module.exports = {
   updateStatus,
   bulkAction,
   getAllContacts,
+<<<<<<< HEAD
   getAllLabels,
   createLabel,
   deleteLabel,
   updateLeadLabels,
+=======
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
   getContactById,
   createContact,
   updateContact,

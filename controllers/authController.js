@@ -171,6 +171,7 @@ const logout = async (req, res) => {
  */
 const getCurrentUser = async (req, res) => {
   try {
+<<<<<<< HEAD
     // Get userId from JWT token (req.userId set by auth middleware) or from query/body
     // DO NOT default to 1 - this was causing the bug!
     const userId = req.userId || req.query.user_id || req.body.user_id;
@@ -184,6 +185,9 @@ const getCurrentUser = async (req, res) => {
     
     console.log('getCurrentUser - userId:', userId);
     
+=======
+    const userId = req.query.user_id || req.body.user_id || 1;
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
     const [users] = await pool.execute(
       `SELECT u.id, u.company_id, u.name, u.email, u.role, u.status, u.avatar, u.phone, u.address,
               u.emergency_contact_name, u.emergency_contact_phone, u.emergency_contact_relation,

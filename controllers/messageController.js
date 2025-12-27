@@ -43,8 +43,11 @@ const getAll = async (req, res) => {
          ORDER BY m.created_at ASC`,
         [companyId, userId, conversationWith, conversationWith, userId]
       );
+<<<<<<< HEAD
 
       console.log('Conversation messages found:', messages.length);
+=======
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 
       return res.json({
         success: true,
@@ -55,6 +58,7 @@ const getAll = async (req, res) => {
     // Get all conversations (grouped by other user) - Fixed to show latest message per conversation
     const [conversations] = await pool.execute(
       `SELECT 
+<<<<<<< HEAD
          other_user_id,
          other_user_name,
          other_user_email,
@@ -98,6 +102,34 @@ const getAll = async (req, res) => {
 
     console.log('Conversations found:', conversations.length);
 
+=======
+         CASE 
+           WHEN m.from_user_id = ? THEN m.to_user_id
+           ELSE m.from_user_id
+         END as other_user_id,
+         CASE 
+           WHEN m.from_user_id = ? THEN u_to.name
+           ELSE u_from.name
+         END as other_user_name,
+         CASE 
+           WHEN m.from_user_id = ? THEN u_to.email
+           ELSE u_from.email
+         END as other_user_email,
+         m.message as last_message,
+         m.created_at as last_message_time,
+         SUM(CASE WHEN m.to_user_id = ? AND m.is_read = 0 THEN 1 ELSE 0 END) as unread_count
+       FROM messages m
+       LEFT JOIN users u_from ON m.from_user_id = u_from.id
+       LEFT JOIN users u_to ON m.to_user_id = u_to.id
+       WHERE m.company_id = ? 
+         AND m.is_deleted = 0
+         AND (m.from_user_id = ? OR m.to_user_id = ?)
+       GROUP BY other_user_id, other_user_name, other_user_email, last_message, last_message_time
+       ORDER BY last_message_time DESC`,
+      [userId, userId, userId, userId, companyId, userId, userId]
+    );
+
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
     res.json({
       success: true,
       data: conversations,

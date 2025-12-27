@@ -45,7 +45,11 @@ const generateTaskCode = async (projectId, companyId) => {
  */
 const getAll = async (req, res) => {
   try {
+<<<<<<< HEAD
     const { status, project_id, assigned_to, due_date, start_date, priority, search } = req.query;
+=======
+    const { status, project_id, assigned_to } = req.query;
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 
     // Admin must provide company_id - required for filtering
     const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;

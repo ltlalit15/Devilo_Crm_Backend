@@ -2,6 +2,7 @@ const pool = require('../config/db');
 
 const getAll = async (req, res) => {
   try {
+<<<<<<< HEAD
     const companyId = req.query.company_id || req.body.company_id || req.companyId;
     const userId = req.query.user_id || req.body.user_id;
     
@@ -20,6 +21,12 @@ const getAll = async (req, res) => {
       whereClause += ' AND tl.user_id = ?';
       params.push(userId);
     }
+=======
+    const companyId = req.query.company_id || req.body.company_id || 1;
+    
+    const whereClause = 'WHERE tl.company_id = ? AND tl.is_deleted = 0 AND u.is_deleted = 0';
+    const params = [companyId];
+>>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 
     // Get all time logs without pagination
     const [timeLogs] = await pool.execute(
