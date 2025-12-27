@@ -22,10 +22,7 @@ const getAll = async (req, res) => {
       project_category,
       assigned_user_id,
       project_manager_id,
-<<<<<<< HEAD
       member_user_id,
-=======
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
       start_date,
       end_date,
       sort_by = 'created_at',
@@ -80,7 +77,6 @@ const getAll = async (req, res) => {
       params.push(project_type || project_category, project_type || project_category);
     }
 
-<<<<<<< HEAD
     // Member user filter - Only projects where user is a team member
     if (member_user_id) {
       whereClause += ` AND (p.project_manager_id = ? OR EXISTS (
@@ -90,10 +86,6 @@ const getAll = async (req, res) => {
     }
     // Assigned user filter (project manager or team member)
     else if (assigned_user_id || project_manager_id) {
-=======
-    // Assigned user filter (project manager or team member)
-    if (assigned_user_id || project_manager_id) {
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
       const userId = assigned_user_id || project_manager_id;
       whereClause += ` AND (p.project_manager_id = ? OR EXISTS (
         SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = ?
@@ -646,7 +638,6 @@ const uploadFile = async (req, res) => {
   }
 };
 
-<<<<<<< HEAD
 /**
  * Get project members
  * GET /api/v1/projects/:id/members
@@ -852,8 +843,6 @@ const getFiles = async (req, res) => {
   }
 };
 
-=======
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 module.exports = {
   getAll,
   getById,
@@ -861,13 +850,9 @@ module.exports = {
   update,
   delete: deleteProject,
   getFilters,
-<<<<<<< HEAD
   uploadFile,
   getMembers,
   getTasks,
   getFiles
-=======
-  uploadFile
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
 };
 

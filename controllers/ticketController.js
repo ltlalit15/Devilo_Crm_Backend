@@ -10,21 +10,15 @@ const getAll = async (req, res) => {
   try {
     // No pagination - return all tickets
     const companyId = req.query.company_id || req.body.company_id || 1;
-<<<<<<< HEAD
     const clientId = req.query.client_id || req.body.client_id;
     const status = req.query.status;
     const priority = req.query.priority;
     
     let whereClause = 'WHERE t.is_deleted = 0';
-=======
-    
-    let whereClause = 'WHERE is_deleted = 0';
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
     const params = [];
 
     // Add company_id filter only if provided
     if (companyId) {
-<<<<<<< HEAD
       whereClause += ' AND t.company_id = ?';
       params.push(companyId);
     }
@@ -55,15 +49,6 @@ const getAll = async (req, res) => {
        LEFT JOIN users u ON t.assigned_to_id = u.id
        ${whereClause} 
        ORDER BY t.created_at DESC`,
-=======
-      whereClause += ' AND company_id = ?';
-      params.push(companyId);
-    }
-
-    // Get all tickets without pagination
-    const [tickets] = await pool.execute(
-      `SELECT * FROM tickets ${whereClause} ORDER BY created_at DESC`,
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
       params
     );
     res.json({ 
@@ -126,7 +111,6 @@ const create = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-<<<<<<< HEAD
     const companyId = req.query.company_id || req.body.company_id || 1;
     const clientId = req.query.client_id || req.body.client_id;
 
@@ -315,14 +299,6 @@ const addComment = async (req, res) => {
 
     // Check if ticket exists
     const [tickets] = await pool.execute(
-=======
-    const { comment, file_path } = req.body;
-    const companyId = req.query.company_id || req.body.company_id || 1;
-    const userId = req.query.user_id || req.body.user_id || null;
-
-    // Check if ticket exists
-    const [tickets] = await pool.execute(
->>>>>>> 49d0b025c5d5a9b044a11e35aa3d5df4392e718e
       `SELECT id FROM tickets WHERE id = ? AND is_deleted = 0`,
       [id]
     );
