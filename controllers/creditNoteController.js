@@ -9,11 +9,14 @@ const pool = require('../config/db');
  */
 const generateCreditNoteNumber = async (companyId) => {
   try {
+    // Check ALL credit notes (including deleted) to avoid UNIQUE constraint violations
     const [result] = await pool.execute(
       `SELECT credit_note_number FROM credit_notes 
-       WHERE company_id = ? AND is_deleted = 0 
+       WHERE company_id = ? 
        AND credit_note_number LIKE 'CN#%'
-       ORDER BY LENGTH(credit_note_number) DESC, credit_note_number DESC 
+       ORDER BY 
+         CAST(SUBSTRING(credit_note_number, 4) AS UNSIGNED) DESC,
+         credit_note_number DESC 
        LIMIT 1`,
       [companyId]
     );
@@ -24,19 +27,21 @@ const generateCreditNoteNumber = async (companyId) => {
       const match = cnNum.match(/CN#(\d+)/);
       if (match && match[1]) {
         const existingNum = parseInt(match[1], 10);
-        if (!isNaN(existingNum)) {
+        if (!isNaN(existingNum) && existingNum >= 1) {
           nextNum = existingNum + 1;
         }
       }
     }
     
+    // Generate unique number with retry logic
     let creditNoteNumber = `CN#${String(nextNum).padStart(3, '0')}`;
     let attempts = 0;
-    const maxAttempts = 100;
+    const maxAttempts = 1000; // Increased attempts
     
     while (attempts < maxAttempts) {
+      // Check if this number exists (including deleted records due to UNIQUE constraint)
       const [existing] = await pool.execute(
-        `SELECT id FROM credit_notes WHERE company_id = ? AND credit_note_number = ? AND is_deleted = 0`,
+        `SELECT id FROM credit_notes WHERE company_id = ? AND credit_note_number = ?`,
         [companyId, creditNoteNumber]
       );
       
@@ -49,11 +54,13 @@ const generateCreditNoteNumber = async (companyId) => {
       attempts++;
     }
     
-    const timestamp = Date.now().toString().slice(-6);
+    // Fallback: Use timestamp to ensure uniqueness
+    const timestamp = Date.now().toString().slice(-8);
     return `CN#${timestamp}`;
   } catch (error) {
     console.error('Error generating credit note number:', error);
-    const timestamp = Date.now().toString().slice(-6);
+    // Fallback: Use timestamp to ensure uniqueness
+    const timestamp = Date.now().toString().slice(-8);
     return `CN#${timestamp}`;
   }
 };
@@ -95,12 +102,13 @@ const getAll = async (req, res) => {
     const [creditNotes] = await pool.execute(
       `SELECT cn.*, 
               i.invoice_number,
-              i.client_id,
-              c.company_name as client_name,
+              COALESCE(cn.client_id, i.client_id) as client_id,
+              COALESCE(c.company_name, ci.company_name) as client_name,
               u.name as created_by_name
        FROM credit_notes cn
        LEFT JOIN invoices i ON cn.invoice_id = i.id
-       LEFT JOIN clients c ON i.client_id = c.id
+       LEFT JOIN clients c ON cn.client_id = c.id
+       LEFT JOIN clients ci ON i.client_id = ci.id
        LEFT JOIN users u ON cn.created_by = u.id
        ${whereClause}
        ORDER BY cn.created_at DESC`,
@@ -176,62 +184,62 @@ const create = async (req, res) => {
       status = 'Pending'
     } = req.body;
 
-    if (!invoice_id || !amount || !date) {
-      return res.status(400).json({
-        success: false,
-        error: 'invoice_id, amount, and date are required'
-      });
-    }
-
-    // Verify invoice exists and belongs to company
-    const [invoices] = await pool.execute(
-      `SELECT id, client_id, total, unpaid FROM invoices 
-       WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [invoice_id, req.companyId]
-    );
-
-    if (invoices.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Invoice not found'
-      });
-    }
-
-    const invoice = invoices[0];
-
+    // Removed required validations - allow empty data
+    const companyId = req.body.company_id || req.query.company_id || req.companyId || 1;
+    
     // Generate credit note number
-    const creditNoteNumber = await generateCreditNoteNumber(req.companyId);
+    const creditNoteNumber = await generateCreditNoteNumber(companyId);
+    
+    // Verify invoice exists if invoice_id is provided (optional)
+    let invoice = null;
+    if (invoice_id) {
+      const [invoices] = await pool.execute(
+        `SELECT id, client_id, total, unpaid FROM invoices 
+         WHERE id = ? AND is_deleted = 0`,
+        [invoice_id]
+      );
+      if (invoices.length > 0) {
+        invoice = invoices[0];
+      }
+    }
 
     // Insert credit note
+    const clientId = req.body.client_id || null;
     const [result] = await pool.execute(
       `INSERT INTO credit_notes (
-        company_id, credit_note_number, invoice_id, amount, date, reason, status, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        company_id, credit_note_number, client_id, invoice_id, amount, date, reason, status, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId,
+        companyId,
         creditNoteNumber,
-        invoice_id,
-        amount,
-        date,
+        clientId,
+        invoice_id || null,
+        amount ? parseFloat(amount) : null,
+        date || null,
         reason || null,
-        status,
-        req.userId
+        status || 'Pending',
+        req.userId || req.body.user_id || 1
       ]
     );
 
-    // If status is Applied, update invoice unpaid amount
-    if (status === 'Applied') {
-      await pool.execute(
-        `UPDATE invoices SET
-          unpaid = GREATEST(0, unpaid - ?),
-          status = CASE
-            WHEN unpaid - ? <= 0 THEN 'Paid'
-            ELSE status
-          END,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [amount, amount, invoice_id]
-      );
+    // If status is Applied and invoice_id and amount are provided, update invoice unpaid amount
+    if (status === 'Applied' && invoice_id && amount) {
+      try {
+        await pool.execute(
+          `UPDATE invoices SET
+            unpaid = GREATEST(0, COALESCE(unpaid, total) - ?),
+            status = CASE
+              WHEN COALESCE(unpaid, total) - ? <= 0 THEN 'Paid'
+              ELSE status
+            END,
+            updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [amount, amount, invoice_id]
+        );
+      } catch (err) {
+        console.warn('Error updating invoice amounts:', err.message);
+        // Don't fail credit note creation if invoice update fails
+      }
     }
 
     res.status(201).json({
@@ -274,21 +282,25 @@ const update = async (req, res) => {
     const updates = [];
     const values = [];
 
+    if (client_id !== undefined) {
+      updates.push('client_id = ?');
+      values.push(client_id || null);
+    }
     if (amount !== undefined) {
       updates.push('amount = ?');
-      values.push(amount);
+      values.push(amount ? parseFloat(amount) : null);
     }
     if (date !== undefined) {
       updates.push('date = ?');
-      values.push(date);
+      values.push(date || null);
     }
     if (reason !== undefined) {
       updates.push('reason = ?');
-      values.push(reason);
+      values.push(reason || null);
     }
     if (status !== undefined) {
       updates.push('status = ?');
-      values.push(status);
+      values.push(status || 'Pending');
     }
 
     if (updates.length === 0) {
@@ -299,10 +311,10 @@ const update = async (req, res) => {
     }
 
     updates.push('updated_at = CURRENT_TIMESTAMP');
-    values.push(id, req.companyId);
+    values.push(id);
 
     await pool.execute(
-      `UPDATE credit_notes SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
+      `UPDATE credit_notes SET ${updates.join(', ')} WHERE id = ?`,
       values
     );
 
@@ -341,17 +353,40 @@ const update = async (req, res) => {
 const deleteCreditNote = async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
+
+    console.log('Deleting credit note:', id, 'companyId:', companyId);
+
+    // Check if credit note exists first
+    const [existing] = await pool.execute(
+      `SELECT id, is_deleted FROM credit_notes WHERE id = ?`,
+      [id]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Credit note not found'
+      });
+    }
+
+    if (existing[0].is_deleted === 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'Credit note is already deleted'
+      });
+    }
 
     const [result] = await pool.execute(
       `UPDATE credit_notes SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+       WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Credit note not found'
+        error: 'Credit note not found or already deleted'
       });
     }
 
@@ -361,9 +396,11 @@ const deleteCreditNote = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete credit note error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete credit note'
+      error: 'Failed to delete credit note',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

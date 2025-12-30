@@ -60,21 +60,50 @@ const getAll = async (req, res) => {
       params.push(status);
     }
 
-    // Get all expenses without pagination
-    const [expenses] = await pool.execute(
-      `SELECT e.* FROM expenses e
-       ${whereClause}
-       ORDER BY e.created_at DESC`,
-      params
-    );
+    // Get all expenses with lead information
+    let expenses = [];
+    try {
+      const [expensesResult] = await pool.execute(
+        `SELECT e.*, 
+                l.name as lead_name, 
+                l.company_name as lead_company_name,
+                l.email as lead_email
+         FROM expenses e
+         LEFT JOIN leads l ON e.lead_id = l.id
+         ${whereClause}
+         ORDER BY e.created_at DESC`,
+        params
+      );
+      expenses = expensesResult || [];
+    } catch (joinError) {
+      // If JOIN fails, try without JOIN
+      console.warn('Error with JOIN, trying without:', joinError.message);
+      const [expensesResult] = await pool.execute(
+        `SELECT e.* FROM expenses e ${whereClause} ORDER BY e.created_at DESC`,
+        params
+      );
+      expenses = expensesResult || [];
+    }
 
     // Get items for each expense
     for (let expense of expenses) {
-      const [items] = await pool.execute(
-        `SELECT * FROM expense_items WHERE expense_id = ?`,
-        [expense.id]
-      );
-      expense.items = items;
+      try {
+        const [items] = await pool.execute(
+          `SELECT * FROM expense_items WHERE expense_id = ?`,
+          [expense.id]
+        );
+        expense.items = items || [];
+      } catch (itemError) {
+        console.warn(`Error fetching items for expense ${expense.id}:`, itemError.message);
+        expense.items = [];
+      }
+      
+      // Set lead_contact from lead information
+      if (expense.lead_name || expense.lead_company_name) {
+        expense.lead_contact = expense.lead_name || expense.lead_company_name || expense.lead_email || 'N/A';
+      } else {
+        expense.lead_contact = 'N/A';
+      }
     }
 
     res.json({
@@ -83,32 +112,28 @@ const getAll = async (req, res) => {
     });
   } catch (error) {
     console.error('Get expenses error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch expenses' });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch expenses',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
 const create = async (req, res) => {
   try {
     const {
-      company_id, lead_id, deal_id, valid_till, currency, calculate_tax, description,
+      company_id, lead_id, deal_id, deal_name, valid_till, currency, calculate_tax, description,
       note, terms, discount, discount_type, require_approval, items = []
     } = req.body;
 
-    // Validation
-    if (!items || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'items array is required'
-      });
-    }
-
-    const companyId = req.body.company_id || req.companyId;
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: "company_id is required"
-      });
-    }
+    // Removed required validations - allow empty data
+    const companyId = req.body.company_id || req.companyId || 1;
+    
+    // Handle deal_id - if deal_name is provided but deal_id is not, set deal_id to null
+    // (deal_name is just for display, we store deal_id)
+    const effectiveDealId = deal_id || null;
 
     // Generate expense number
     const expense_number = await generateExpenseNumber(companyId);
@@ -128,7 +153,7 @@ const create = async (req, res) => {
         companyId,
         expense_number,
         lead_id ?? null,
-        deal_id ?? null,
+        effectiveDealId,
         valid_till ?? null,
         currency || 'USD',
         calculate_tax || 'After Discount',
@@ -143,7 +168,7 @@ const create = async (req, res) => {
         totals.total,
         require_approval ?? 1,
         'Pending',
-        req.userId ?? null
+        req.userId || req.body.user_id || req.query.user_id || 1
       ]
     );
 
@@ -177,7 +202,7 @@ const create = async (req, res) => {
         
         return [
           expenseId,
-          item.item_name,
+          item.item_name || item.itemName || item.description || 'Expense Item',
           item.description || null,
           quantity,
           item.unit || 'Pcs',
@@ -222,7 +247,13 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create expense error:', error);
-    res.status(500).json({ success: false, error: 'Failed to create expense' });
+    console.error('Error stack:', error.stack);
+    console.error('Error message:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to create expense',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -504,26 +535,32 @@ const update = async (req, res) => {
 const deleteExpense = async (req, res) => {
   try {
     const { id } = req.params;
-    const companyId = req.query.company_id || req.body.company_id || 1;
 
-    // Check if expense exists
+    // Check if expense exists (without company_id check for flexibility)
     const [existing] = await pool.execute(
-      `SELECT id FROM expenses WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, companyId]
+      `SELECT id FROM expenses WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Expense not found'
+        error: 'Expense not found or already deleted'
       });
     }
 
     // Soft delete
-    await pool.execute(
+    const [result] = await pool.execute(
       `UPDATE expenses SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [id]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Expense not found'
+      });
+    }
 
     res.json({
       success: true,

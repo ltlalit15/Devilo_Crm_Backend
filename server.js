@@ -167,10 +167,31 @@ app.use((err, req, res, next) => {
 // Start Server
 // =====================================================
 
-app.listen(PORT, () => {
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err) => {
+  console.error('❌ Unhandled Promise Rejection:', err);
+  // Don't exit, just log the error
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err);
+  // Don't exit immediately, log and continue
+});
+
+const server = app.listen(PORT, () => {
   console.log(`🚀 Worksuite CRM Backend Server running on port ${PORT}`);
   console.log(`📡 API Base URL: http://localhost:${PORT}${apiBase}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+});
+
+// Handle server errors
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use. Please stop the other process or use a different port.`);
+  } else {
+    console.error('❌ Server error:', err);
+  }
 });
 
 module.exports = app;

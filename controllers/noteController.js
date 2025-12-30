@@ -61,8 +61,9 @@ const getAll = async (req, res) => {
     }
 
     if (clientId) {
-      whereClause += ' AND (n.client_id = ? OR n.user_id = ?)';
-      params.push(clientId, clientId);
+      // Direct client_id match (most common case)
+      whereClause += ' AND n.client_id = ?';
+      params.push(clientId);
     }
 
     if (leadId) {
@@ -157,24 +158,12 @@ const create = async (req, res) => {
       content
     } = req.body;
 
-    if (!company_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id is required'
-      });
-    }
-
-    if (!content) {
-      return res.status(400).json({
-        success: false,
-        error: 'Note content is required'
-      });
-    }
+    // Removed required validations - allow empty data
 
     const [result] = await pool.execute(
       `INSERT INTO notes (company_id, user_id, client_id, lead_id, project_id, title, content)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [company_id, user_id || null, client_id || null, lead_id || null, project_id || null, title || null, content]
+      [company_id ?? null, user_id || null, client_id || null, lead_id || null, project_id || null, title || null, content || null]
     );
 
     const [newNote] = await pool.execute(

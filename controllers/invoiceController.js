@@ -303,20 +303,15 @@ const create = async (req, res) => {
     // Get created_by from various sources - body, req.userId, or default to 1 (admin)
     const effectiveCreatedBy = created_by || user_id || req.userId || 1;
 
-    // Validation
-    if (!effectiveCompanyId || !invoice_date || !due_date || !client_id || !items || items.length === 0) {
-      console.log('Invoice validation failed:', { company_id, effectiveCompanyId, invoice_date, due_date, client_id, items_length: items?.length });
-      return res.status(400).json({
-        success: false,
-        error: 'company_id, invoice_date, due_date, client_id, and items are required'
-      });
-    }
+    // Removed required validations - allow empty data
 
     // Generate invoice number
     const invoice_number = await generateInvoiceNumber(effectiveCompanyId);
 
-    // Calculate totals
-    const totals = calculateTotals(items, discount, discount_type);
+    // Calculate totals - handle empty items array
+    const totals = items && items.length > 0 
+      ? calculateTotals(items, discount, discount_type)
+      : { sub_total: 0, discount_amount: 0, tax_amount: 0, total: 0, unpaid: 0 };
 
     // Insert invoice - convert undefined to null for SQL
     const [result] = await pool.execute(
@@ -330,13 +325,13 @@ const create = async (req, res) => {
         time_log_from, time_log_to, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        effectiveCompanyId,
+        effectiveCompanyId ?? null,
         invoice_number,
-        invoice_date,
-        due_date,
+        invoice_date ?? null,
+        due_date ?? null,
         currency || 'USD',
         exchange_rate ?? 1.0,
-        client_id,
+        client_id ?? null,
         project_id ?? null,
         calculate_tax || 'After Discount',
         bank_account ?? null,
@@ -348,11 +343,11 @@ const create = async (req, res) => {
         terms || 'Thank you for your business.',
         discount ?? 0,
         discount_type || '%',
-        totals.sub_total,
-        totals.discount_amount,
-        totals.tax_amount,
-        totals.total,
-        totals.unpaid,
+        totals.sub_total ?? 0,
+        totals.discount_amount ?? 0,
+        totals.tax_amount ?? 0,
+        totals.total ?? 0,
+        totals.unpaid ?? 0,
         'Unpaid',
         is_recurring ?? 0,
         billing_frequency ?? null,
@@ -367,8 +362,8 @@ const create = async (req, res) => {
 
     const invoiceId = result.insertId;
 
-    // Insert items - calculate amount if not provided
-    if (items.length > 0) {
+    // Insert items - calculate amount if not provided (only if items array exists and has items)
+    if (items && Array.isArray(items) && items.length > 0) {
       const itemValues = items.map(item => {
         const quantity = parseFloat(item.quantity || 1);
         const unitPrice = parseFloat(item.unit_price || 0);
@@ -385,9 +380,12 @@ const create = async (req, res) => {
           ? parseFloat(item.amount) 
           : amount;
         
+        // Handle item_name - use description or default value if not provided
+        const itemName = item.item_name || item.description || item.itemName || 'Invoice Item' || null;
+        
         return [
           invoiceId,
-          item.item_name,
+          itemName,
           item.description || null,
           quantity,
           item.unit || 'Pcs',
@@ -499,9 +497,12 @@ const update = async (req, res) => {
             ? parseFloat(item.amount) 
             : amount;
           
+          // Handle item_name - use description or default value if not provided
+          const itemName = item.item_name || item.description || item.itemName || 'Invoice Item' || null;
+          
           return [
             id,
-            item.item_name,
+            itemName,
             item.description || null,
             quantity,
             item.unit || 'Pcs',
@@ -776,9 +777,12 @@ const createRecurring = async (req, res) => {
           ? parseFloat(item.amount) 
           : amount;
         
+        // Handle item_name - use description or default value if not provided
+        const itemName = item.item_name || item.description || item.itemName || 'Invoice Item' || null;
+        
         return [
           result.insertId,
-          item.item_name,
+          itemName,
           item.description || null,
           quantity,
           item.unit || 'Pcs',

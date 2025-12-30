@@ -68,6 +68,14 @@ const getAll = async (req, res) => {
       whereClause += ' AND t.project_id = ?';
       params.push(project_id);
     }
+    if (req.query.client_id) {
+      whereClause += ' AND t.client_id = ?';
+      params.push(req.query.client_id);
+    }
+    if (req.query.lead_id) {
+      whereClause += ' AND t.lead_id = ?';
+      params.push(req.query.lead_id);
+    }
     if (assigned_to) {
       whereClause += ` AND t.id IN (
         SELECT task_id FROM task_assignees WHERE user_id = ?
@@ -259,17 +267,8 @@ const create = async (req, res) => {
     const tags = parseJSON(req.body.tags, []);
     const assigned_to = parseJSON(req.body.assigned_to, []);
 
-    // ===============================
-    // VALIDATION
-    // ===============================
-    const taskTitle = title?.trim();
-    if (!taskTitle) {
-      console.log('Title validation failed. Received title:', title);
-      return res.status(400).json({
-        success: false,
-        error: "title is required"
-      });
-    }
+    // Removed required validations - allow empty data
+    const taskTitle = title?.trim() || null;
 
     // ===============================
     // SAFE NULL HANDLING - All 13 Fields
@@ -328,27 +327,31 @@ const create = async (req, res) => {
         sub_description,
         task_category,
         project_id,
+        client_id,
+        lead_id,
         start_date,
         due_date,
         status,
         priority,
         estimated_time,
         created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
-        companyId,
+        companyId ?? null,
         code,
-        taskTitle,
-        safeDescription,
-        safeSubDescription,
-        safeTaskCategory,
-        safeProjectId,
-        safeStartDate,
-        safeDeadline,
-        safeStatus,
-        safePriority,
-        safeEstimatedTime,
+        taskTitle ?? null,
+        safeDescription ?? null,
+        safeSubDescription ?? null,
+        safeTaskCategory ?? null,
+        safeProjectId ?? null,
+        safeClientId ?? null,
+        safeLeadId ?? null,
+        safeStartDate ?? null,
+        safeDeadline ?? null,
+        safeStatus || 'To do',
+        safePriority || 'Medium',
+        safeEstimatedTime ?? null,
         req.userId || req.body.user_id || 1
       ]
     );

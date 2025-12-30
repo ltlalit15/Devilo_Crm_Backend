@@ -321,13 +321,7 @@ const create = async (req, res) => {
       task_approval, label, project_members = [], status, progress
     } = req.body;
 
-    // Validation - only company_id and project_name are required
-    if (!company_id || !project_name) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id and project_name are required'
-      });
-    }
+    // Removed required validations - allow empty data
 
     // Validate client_id if provided
     let validClientId = null;
@@ -381,9 +375,9 @@ const create = async (req, res) => {
         task_approval, label, status, progress, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id, projectShortCode, project_name, description || null, projectStartDate, deadline || null,
+        company_id ?? null, projectShortCode, project_name || null, description || null, projectStartDate, deadline || null,
         no_deadline || 0, budget || null, project_category || null, project_sub_category || null,
-        department_id || null, validClientId, validManagerId, project_summary || null, notes || null,
+        department_id || null, validClientId || null, validManagerId || null, project_summary || null, notes || null,
         public_gantt_chart || 'enable', public_task_board || 'enable',
         task_approval || 'disable', label || null, status || 'not started',
         progress || 0, req.userId || req.user?.id || validManagerId || 1
@@ -482,6 +476,13 @@ const update = async (req, res) => {
         `UPDATE projects SET ${updates.join(', ')} WHERE id = ?`,
         values
       );
+    } else {
+      // If no fields to update, still return success
+      return res.json({
+        success: true,
+        data: projects[0],
+        message: 'Project updated successfully'
+      });
     }
 
     // Update members if provided

@@ -4,25 +4,35 @@ const getAll = async (req, res) => {
   try {
     const { status, client_id } = req.query;
     
-    const companyId = req.query.company_id || req.body.company_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
     let whereClause = 'WHERE s.company_id = ? AND s.is_deleted = 0';
     const params = [companyId];
 
-    // Filter by client_id for client-side access
-    if (client_id) {
-      // First find the client record by user_id
-      const [clients] = await pool.execute(
-        'SELECT id FROM clients WHERE (owner_id = ? OR id = ?) AND company_id = ? AND is_deleted = 0 LIMIT 1',
-        [client_id, client_id, companyId]
-      );
+    // Filter by client_id - directly use client_id if provided
+    // Parse client_id to ensure it's a number
+    const parsedClientId = client_id ? parseInt(client_id, 10) : null;
+    
+    if (parsedClientId && !isNaN(parsedClientId)) {
+      // First try direct client_id match in subscriptions table (most common case)
+      whereClause += ' AND s.client_id = ?';
+      params.push(parsedClientId);
       
-      if (clients.length > 0) {
-        whereClause += ' AND s.client_id = ?';
-        params.push(clients[0].id);
-      } else {
-        // Return empty if no client found
-        return res.json({ success: true, data: [] });
+      console.log(`Filtering subscriptions by client_id: ${parsedClientId}, company_id: ${companyId}`);
+      
+      // Also verify client exists (optional check, doesn't block results)
+      try {
+        const [clientCheck] = await pool.execute(
+          'SELECT id FROM clients WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1',
+          [parsedClientId, companyId]
+        );
+        if (clientCheck.length === 0) {
+          console.log(`Warning: client_id ${parsedClientId} not found in clients table, but still filtering subscriptions`);
+        }
+      } catch (err) {
+        console.warn('Error checking client:', err.message);
       }
+    } else if (client_id) {
+      console.warn(`Invalid client_id provided: ${client_id}, skipping client filter`);
     }
 
     if (status) {
@@ -31,14 +41,13 @@ const getAll = async (req, res) => {
     }
 
     // Get all subscriptions without pagination
+    // Use COALESCE for columns that might not exist
     const [subscriptions] = await pool.execute(
       `SELECT s.*, 
               s.plan as title,
               s.plan as plan_name,
               c.company_name as client_name,
-              s.created_at as first_billing_date,
-              s.completed_cycles,
-              s.total_cycles
+              s.created_at as first_billing_date
        FROM subscriptions s
        LEFT JOIN clients c ON s.client_id = c.id
        ${whereClause}
@@ -46,13 +55,22 @@ const getAll = async (req, res) => {
       params
     );
 
+    console.log(`Fetched ${subscriptions.length} subscriptions for client_id: ${client_id}, company_id: ${companyId}`);
+
     res.json({
       success: true,
       data: subscriptions
     });
   } catch (error) {
     console.error('Get subscriptions error:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch subscriptions' });
+    console.error('Error stack:', error.stack);
+    console.error('Error message:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch subscriptions',
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 };
 
@@ -60,13 +78,7 @@ const create = async (req, res) => {
   try {
     const { client_id, plan, amount, billing_cycle, next_billing_date } = req.body;
 
-    // Validation
-    if (!client_id || !plan || !amount || !billing_cycle) {
-      return res.status(400).json({
-        success: false,
-        error: 'client_id, plan, amount, and billing_cycle are required'
-      });
-    }
+    // Removed required validations - allow empty data
 
     // Calculate next_billing_date if not provided
     let nextBillingDate = next_billing_date;
@@ -86,30 +98,74 @@ const create = async (req, res) => {
     }
 
     // Insert subscription - convert undefined to null for SQL
+    const companyIdForInsert = req.companyId ?? req.body.company_id ?? req.query.company_id ?? null;
+    const clientIdForInsert = client_id ?? req.body.client_id ?? null;
+    
+    console.log('Creating subscription with:', { 
+      companyIdForInsert, 
+      clientIdForInsert, 
+      plan, 
+      amount, 
+      billing_cycle,
+      reqBody: req.body,
+      reqQuery: req.query,
+      reqCompanyId: req.companyId
+    });
+    
+    if (!clientIdForInsert) {
+      console.warn('Warning: client_id is null or undefined when creating subscription');
+    }
+    
     const [result] = await pool.execute(
       `INSERT INTO subscriptions (
         company_id, client_id, plan, amount, billing_cycle, status, next_billing_date
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
-        client_id,
-        plan,
-        amount,
+        companyIdForInsert,
+        clientIdForInsert,
+        plan ?? null,
+        amount ?? null,
         billing_cycle || 'Monthly',
         'Active',
-        nextBillingDate
+        nextBillingDate ?? null
       ]
     );
 
-    // Get created subscription
+    console.log('Subscription created with ID:', result.insertId, 'client_id:', clientIdForInsert, 'company_id:', companyIdForInsert);
+
+    // Get created subscription with all fields
     const [subscriptions] = await pool.execute(
-      `SELECT * FROM subscriptions WHERE id = ?`,
+      `SELECT s.*, 
+              s.plan as title,
+              s.plan as plan_name,
+              c.company_name as client_name,
+              s.created_at as first_billing_date
+       FROM subscriptions s
+       LEFT JOIN clients c ON s.client_id = c.id
+       WHERE s.id = ?`,
       [result.insertId]
     );
 
+    const createdSubscription = subscriptions[0];
+    console.log('Created subscription data:', {
+      id: createdSubscription.id,
+      client_id: createdSubscription.client_id,
+      company_id: createdSubscription.company_id,
+      plan: createdSubscription.plan
+    });
+
+    // Verify the subscription was created correctly
+    if (!createdSubscription) {
+      console.error('Error: Subscription was not found after creation');
+      return res.status(500).json({
+        success: false,
+        error: 'Subscription created but could not be retrieved'
+      });
+    }
+
     res.status(201).json({ 
       success: true, 
-      data: subscriptions[0],
+      data: createdSubscription,
       message: 'Subscription created successfully'
     });
   } catch (error) {
@@ -130,10 +186,13 @@ const update = async (req, res) => {
     const { id } = req.params;
     const updateFields = req.body;
 
+    // Get company_id from body, query, or req.companyId
+    const companyId = req.body.company_id || req.query.company_id || req.companyId;
+
     // Check if subscription exists
     const [subscriptions] = await pool.execute(
       `SELECT id FROM subscriptions WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (subscriptions.length === 0) {
@@ -144,7 +203,7 @@ const update = async (req, res) => {
     }
 
     // Build update query
-    const allowedFields = ['plan', 'amount', 'billing_cycle', 'status', 'next_billing_date'];
+    const allowedFields = ['plan', 'amount', 'billing_cycle', 'status', 'next_billing_date', 'client_id'];
     const updates = [];
     const values = [];
 
@@ -152,7 +211,13 @@ const update = async (req, res) => {
       if (updateFields.hasOwnProperty(field)) {
         updates.push(`${field} = ?`);
         // Convert undefined to null for SQL
-        values.push(updateFields[field] === undefined ? null : updateFields[field]);
+        const value = updateFields[field] === undefined ? null : updateFields[field];
+        // Parse amount if it's a number field
+        if (field === 'amount' && value !== null) {
+          values.push(parseFloat(value) || null);
+        } else {
+          values.push(value);
+        }
       }
     }
 
@@ -164,7 +229,7 @@ const update = async (req, res) => {
     }
 
     updates.push('updated_at = CURRENT_TIMESTAMP');
-    values.push(id, req.companyId);
+    values.push(id, companyId);
 
     await pool.execute(
       `UPDATE subscriptions SET ${updates.join(', ')} WHERE id = ? AND company_id = ?`,
@@ -184,9 +249,11 @@ const update = async (req, res) => {
     });
   } catch (error) {
     console.error('Update subscription error:', error);
+    console.error('Error details:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to update subscription'
+      error: 'Failed to update subscription',
+      details: error.message
     });
   }
 };

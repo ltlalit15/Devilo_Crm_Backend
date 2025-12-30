@@ -67,32 +67,36 @@ const calculateTotals = (items, discount, discountType) => {
   let subTotal = 0;
   let taxAmount = 0;
 
-  items.forEach(item => {
-    const quantity = parseFloat(item.quantity) || 0;
-    const unitPrice = parseFloat(item.unit_price) || 0;
-    const taxRate = parseFloat(item.tax_rate) || 0;
-    
-    const itemSubtotal = quantity * unitPrice;
-    const itemTax = itemSubtotal * (taxRate / 100);
-    
-    subTotal += itemSubtotal;
-    taxAmount += itemTax;
-  });
+  if (items && Array.isArray(items) && items.length > 0) {
+    items.forEach(item => {
+      const quantity = parseFloat(item.quantity) || 0;
+      const unitPrice = parseFloat(item.unit_price) || 0;
+      const taxRate = parseFloat(item.tax_rate) || 0;
+      
+      const itemSubtotal = quantity * unitPrice;
+      const itemTax = itemSubtotal * (taxRate / 100);
+      
+      subTotal += itemSubtotal;
+      taxAmount += itemTax;
+    });
+  }
 
   let discountAmount = 0;
+  const discountValue = parseFloat(discount) || 0;
   if (discountType === '%') {
-    discountAmount = (subTotal * parseFloat(discount)) / 100;
+    discountAmount = (subTotal * discountValue) / 100;
   } else {
-    discountAmount = parseFloat(discount) || 0;
+    discountAmount = discountValue;
   }
 
   const total = subTotal + taxAmount - discountAmount;
 
+  // Ensure all values are valid numbers (not NaN)
   return {
-    sub_total: Math.round(subTotal * 100) / 100,
-    discount_amount: Math.round(discountAmount * 100) / 100,
-    tax_amount: Math.round(taxAmount * 100) / 100,
-    total: Math.round(total * 100) / 100
+    sub_total: isNaN(subTotal) ? 0 : Math.round(subTotal * 100) / 100,
+    discount_amount: isNaN(discountAmount) ? 0 : Math.round(discountAmount * 100) / 100,
+    tax_amount: isNaN(taxAmount) ? 0 : Math.round(taxAmount * 100) / 100,
+    total: isNaN(total) ? 0 : Math.round(total * 100) / 100
   };
 };
 
@@ -175,6 +179,11 @@ const getAll = async (req, res) => {
     if (created_by) {
       whereClause += ' AND e.created_by = ?';
       params.push(created_by);
+    }
+    
+    if (lead_id) {
+      whereClause += ' AND e.lead_id = ?';
+      params.push(parseInt(lead_id));
     }
     
     // Search filter
@@ -262,21 +271,13 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-    const companyId = req.query.company_id || req.body.company_id || req.companyId;
-    
     const [proposals] = await pool.execute(
-      `SELECT e.*, 
-       c.company_name as client_name, 
-       p.project_name, 
-       comp.name as company_name,
-       cc.name as client_contact_name,
-       cc.email as client_contact_email
+      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
        FROM estimates e
        LEFT JOIN clients c ON e.client_id = c.id
-       LEFT JOIN client_contacts cc ON cc.client_id = c.id AND cc.is_primary = 1
        LEFT JOIN projects p ON e.project_id = p.id
        LEFT JOIN companies comp ON e.company_id = comp.id
-       WHERE e.id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.estimate_number LIKE 'PROP-%' OR e.estimate_number LIKE 'PROPOSAL%')`,
+       WHERE e.id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.status IN ('Sent', 'Draft'))`,
       [id]
     );
     if (proposals.length === 0) {
@@ -290,35 +291,7 @@ const getById = async (req, res) => {
       `SELECT * FROM estimate_items WHERE estimate_id = ?`,
       [id]
     );
-    
-    // Calculate item amounts if missing
-    proposal.items = items.map(item => ({
-      ...item,
-      quantity: parseFloat(item.quantity) || 0,
-      unit_price: parseFloat(item.unit_price) || 0,
-      amount: parseFloat(item.amount) || (parseFloat(item.quantity) * parseFloat(item.unit_price)) || 0
-    }));
-
-    // Recalculate totals from items if needed
-    if (proposal.items.length > 0) {
-      let subTotal = 0;
-      let taxAmount = 0;
-      
-      proposal.items.forEach(item => {
-        const itemSubtotal = item.quantity * item.unit_price;
-        const itemTax = itemSubtotal * (parseFloat(item.tax_rate) || 0) / 100;
-        subTotal += itemSubtotal;
-        taxAmount += itemTax;
-        item.amount = itemSubtotal + itemTax;
-      });
-      
-      // Update proposal totals if they were 0
-      if (parseFloat(proposal.sub_total) === 0 && subTotal > 0) {
-        proposal.sub_total = subTotal;
-        proposal.tax_amount = taxAmount;
-        proposal.total = subTotal + taxAmount - parseFloat(proposal.discount_amount || 0);
-      }
-    }
+    proposal.items = items;
 
     res.json({ success: true, data: proposal });
   } catch (error) {
@@ -327,121 +300,21 @@ const getById = async (req, res) => {
   }
 };
 
-const convertLeadToClient = async (leadId, companyId, userId) => {
-  try {
-    // First, check if lead exists
-    const [leads] = await pool.execute(
-      'SELECT * FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0',
-      [leadId, companyId]
-    );
-
-    if (leads.length === 0) {
-      throw new Error('Lead not found');
-    }
-
-    const lead = leads[0];
-
-    // Check if client already exists with same email (check in client_contacts)
-    const [existingContacts] = await pool.execute(
-      'SELECT cc.client_id FROM client_contacts cc JOIN clients c ON cc.client_id = c.id WHERE cc.email = ? AND c.company_id = ? AND cc.is_deleted = 0 AND c.is_deleted = 0',
-      [lead.email, companyId]
-    );
-
-    if (existingContacts.length > 0) {
-      // Return existing client
-      return { id: existingContacts[0].client_id };
-    }
-
-    // Create new client from lead data
-    const [clientResult] = await pool.execute(
-      `INSERT INTO clients (
-        company_id, company_name, owner_id, address, city, state, zip, country,
-        phone_country_code, phone_number, currency, currency_symbol, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        companyId,
-        lead.company_name || lead.person_name, // Use company name if available, otherwise person name
-        userId,
-        lead.address || '',
-        lead.city || '',
-        lead.state || '',
-        lead.zip || '',
-        lead.country || 'United States',
-        '+1', // Default country code
-        lead.phone || '',
-        'USD',
-        '$',
-        'Active'
-      ]
-    );
-
-    const clientId = clientResult.insertId;
-
-    // Create client contact with email
-    await pool.execute(
-      `INSERT INTO client_contacts (
-        client_id, name, email, phone, is_primary
-      ) VALUES (?, ?, ?, ?, ?)`,
-      [
-        clientId,
-        lead.person_name,
-        lead.email,
-        lead.phone || '',
-        1 // Mark as primary contact
-      ]
-    );
-
-    // Update lead status to Won (converted)
-    await pool.execute(
-      'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['Won', leadId]
-    );
-
-    return { id: clientId };
-  } catch (error) {
-    console.error('Error converting lead to client:', error);
-    return null;
-  }
-};
-
 const create = async (req, res) => {
   try {
     const { 
-      valid_till, currency, client_id, lead_id, project_id, 
+      valid_till, currency, client_id, project_id, lead_id,
       calculate_tax, description, note, terms,
-      discount, discount_type, items = [], status
+      discount, discount_type, items = [], status, title
     } = req.body;
 
-    // If lead_id is provided instead of client_id, convert lead to client
-    let finalClientId = client_id;
-    if (lead_id && !client_id) {
-      // Find or create client from lead
-      const clientFromLead = await convertLeadToClient(lead_id, req.body.company_id || req.query.company_id || req.companyId, req.body.user_id || req.query.user_id || req.userId || 1);
-      if (!clientFromLead) {
-        return res.status(400).json({
-          success: false,
-          error: 'Failed to convert lead to client'
-        });
-      }
-      finalClientId = clientFromLead.id;
-    }
+    // No required validation - save whatever data is provided
 
-    // Validation
-    if (!valid_till || !finalClientId || !items || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'valid_till, client_id (or lead_id), and items are required'
-      });
-    }
-
-    const companyId = req.body.company_id || req.query.company_id || req.companyId;
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: "company_id is required"
-      });
-    }
+    const companyId = req.body.company_id || req.query.company_id || req.companyId || 1;
     const proposal_number = await generateProposalNumber(companyId);
+    
+    // Get created_by from various sources - body, query, req.userId, or default to 1 (admin)
+    const effectiveCreatedBy = req.body.user_id || req.query.user_id || req.userId || req.user?.id || 1;
     
     // Calculate totals from items
     const totals = calculateTotals(items, discount || 0, discount_type || '%');
@@ -457,6 +330,7 @@ const create = async (req, res) => {
     }
     
     // Insert proposal (using estimates table with PROP# prefix)
+    // Convert all undefined/empty values to null explicitly
     const [result] = await pool.execute(
       `INSERT INTO estimates (
         company_id, estimate_number, valid_till, currency, client_id, project_id, lead_id,
@@ -464,25 +338,25 @@ const create = async (req, res) => {
         sub_total, discount_amount, tax_amount, total, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        companyId,
-        proposal_number,
-        valid_till,
-        currency || 'USD',
-        finalClientId,
-        project_id ?? null,
-        lead_id ?? null,
-        calculate_tax || 'After Discount',
-        description ?? null,
-        note ?? null,
-        terms || 'Thank you for your business.',
-        discount ?? 0,
-        discount_type || '%',
-        totals.sub_total,
-        totals.discount_amount,
-        totals.tax_amount,
-        totals.total,
-        mappedStatus,
-        req.user?.id || 1
+        companyId || null,
+        proposal_number || null,
+        (valid_till && valid_till !== '') ? valid_till : null,
+        (currency && currency !== '') ? currency : 'USD',
+        (client_id && client_id !== '') ? client_id : null,
+        (project_id && project_id !== '') ? project_id : null,
+        (lead_id && lead_id !== '') ? lead_id : null,
+        (calculate_tax && calculate_tax !== '') ? calculate_tax : 'After Discount',
+        (description && description !== '') ? description : null,
+        (note && note !== '') ? note : null,
+        (terms && terms !== '') ? terms : 'Thank you for your business.',
+        (discount !== undefined && discount !== null && discount !== '') ? parseFloat(discount) : 0,
+        (discount_type && discount_type !== '') ? discount_type : '%',
+        totals.sub_total || 0,
+        totals.discount_amount || 0,
+        totals.tax_amount || 0,
+        totals.total || 0,
+        mappedStatus || 'Draft',
+        effectiveCreatedBy || 1
       ]
     );
 
@@ -504,11 +378,11 @@ const create = async (req, res) => {
         
         return [
           proposalId,
-          item.name || item.item_name || '', // Handle both 'name' (from frontend) and 'item_name' (standard)
+          item.item_name || '',
           item.description || null,
           quantity,
           item.unit || 'Pcs',
-          item.price || item.unit_price || unitPrice, // Handle both 'price' (from frontend) and 'unit_price' (standard)
+          unitPrice,
           item.tax || null,
           taxRate,
           item.file_path || null,

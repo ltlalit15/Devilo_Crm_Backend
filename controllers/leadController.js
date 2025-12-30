@@ -141,13 +141,9 @@ const create = async (req, res) => {
       notes, probability, call_this_week, labels = []
     } = req.body;
 
-    // Validation
-    if (!person_name || !email || !phone || !owner_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'person_name, email, phone, and owner_id are required'
-      });
-    }
+    // Removed required validations - allow empty data
+    // Only validate owner_id if provided, otherwise use default
+    const effectiveOwnerId = owner_id || req.userId || 1;
 
     // Insert lead - convert undefined to null for SQL
     const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
@@ -163,10 +159,10 @@ const create = async (req, res) => {
         companyId,
         lead_type || 'Organization',
         company_name ?? null,
-        person_name,
-        email,
-        phone,
-        owner_id,
+        person_name ?? null,
+        email ?? null,
+        phone ?? null,
+        effectiveOwnerId,
         status || 'New',
         source ?? null,
         address ?? null,
@@ -178,8 +174,8 @@ const create = async (req, res) => {
         due_followup ?? null,
         notes ?? null,
         probability ?? null,
-        call_this_week ? 1 : 0, // Convert boolean to 0/1 for TINYINT
-        userId // Now always has a value (owner_id or 1 as fallback)
+        call_this_week ?? false,
+        userId
       ]
     );
 

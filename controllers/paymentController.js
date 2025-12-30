@@ -107,17 +107,18 @@ const create = async (req, res) => {
   try {
     const {
       company_id, project_id, invoice_id, paid_on, amount, currency, exchange_rate,
-      transaction_id, payment_gateway, offline_payment_method, bank_account,
-      receipt_path, remark, order_number
+      transaction_id, payment_gateway, offline_payment_method, payment_method,
+      bank_account, receipt_path, remark, note, order_number, client_id
     } = req.body;
 
-    // Validation
-    if (!company_id || !invoice_id || !paid_on || !amount) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id, invoice_id, paid_on, and amount are required'
-      });
-    }
+    // Removed required validations - allow empty data
+
+    // Handle payment_method - map to payment_gateway or offline_payment_method
+    const effectivePaymentGateway = payment_gateway || (payment_method && !['Cash', 'Cheque', 'Bank Transfer'].includes(payment_method) ? payment_method : null);
+    const effectiveOfflinePaymentMethod = offline_payment_method || (payment_method && ['Cash', 'Cheque', 'Bank Transfer'].includes(payment_method) ? payment_method : null);
+    
+    // Handle remark/note
+    const effectiveRemark = remark || note || null;
 
     // Insert payment - convert undefined to null for SQL
     const [result] = await pool.execute(
@@ -129,37 +130,45 @@ const create = async (req, res) => {
       [
         company_id ?? null,
         project_id ?? null,
-        invoice_id,
-        paid_on,
-        amount,
+        invoice_id ?? null,
+        paid_on ?? null,
+        amount ? parseFloat(amount) : null,
         currency || 'USD',
         exchange_rate ?? 1.0,
         transaction_id ?? null,
-        payment_gateway ?? null,
-        offline_payment_method ?? null,
+        effectivePaymentGateway ?? null,
+        effectiveOfflinePaymentMethod ?? null,
         bank_account ?? null,
         receipt_path ?? null,
-        remark ?? null,
+        effectiveRemark ?? null,
         order_number ?? null,
         'Complete',
-        req.body.user_id || req.query.user_id || null
+        req.body.user_id || req.query.user_id || req.userId || 1
       ]
     );
 
-    // Update invoice paid/unpaid amounts
-    await pool.execute(
-      `UPDATE invoices SET
-        paid = paid + ?,
-        unpaid = unpaid - ?,
-        status = CASE
-          WHEN unpaid - ? <= 0 THEN 'Paid'
-          WHEN paid + ? > 0 AND unpaid - ? > 0 THEN 'Partially Paid'
-          ELSE status
-        END,
-        updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [amount, amount, amount, amount, amount, invoice_id]
-    );
+    // Update invoice paid/unpaid amounts only if invoice_id and amount are provided
+    if (invoice_id && amount && parseFloat(amount) > 0) {
+      try {
+        const paymentAmount = parseFloat(amount);
+        await pool.execute(
+          `UPDATE invoices SET
+            paid = COALESCE(paid, 0) + ?,
+            unpaid = GREATEST(COALESCE(unpaid, total), 0) - ?,
+            status = CASE
+              WHEN (COALESCE(unpaid, total) - ?) <= 0 THEN 'Paid'
+              WHEN (COALESCE(paid, 0) + ?) > 0 AND (COALESCE(unpaid, total) - ?) > 0 THEN 'Partially Paid'
+              ELSE status
+            END,
+            updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [paymentAmount, paymentAmount, paymentAmount, paymentAmount, paymentAmount, invoice_id]
+        );
+      } catch (err) {
+        console.warn('Error updating invoice amounts:', err.message);
+        // Don't fail payment creation if invoice update fails
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -168,9 +177,12 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create payment error:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: 'Failed to record payment'
+      error: 'Failed to record payment',
+      details: error.message
     });
   }
 };

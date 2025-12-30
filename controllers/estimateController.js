@@ -103,13 +103,10 @@ const getAll = async (req, res) => {
       params.push(clientId, clientId);
     }
     
-    // Lead filter - Note: estimates table doesn't have lead_id column
-    // This filter is kept for backward compatibility but won't work with current schema
-    // TODO: Implement lead-to-client conversion logic if needed
+    // Lead filter
     if (leadId) {
-      // For now, we'll skip this filter since lead_id column doesn't exist
-      // In future, we could filter by client_id if lead was converted to client
-      console.log('Lead filter requested but lead_id column not available in estimates table');
+      whereClause += ' AND e.lead_id = ?';
+      params.push(parseInt(leadId));
     }
     
     // Date range filter
@@ -130,7 +127,7 @@ const getAll = async (req, res) => {
         e.id,
         e.company_id,
         e.estimate_number,
-        e.created_at as created,
+        e.created_at,
         e.created_by,
         e.valid_till,
         e.currency,
@@ -233,112 +230,15 @@ const getById = async (req, res) => {
   }
 };
 
-const convertLeadToClient = async (leadId, companyId, userId) => {
-  try {
-    // First, check if lead exists
-    const [leads] = await pool.execute(
-      'SELECT * FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0',
-      [leadId, companyId]
-    );
-
-    if (leads.length === 0) {
-      throw new Error('Lead not found');
-    }
-
-    const lead = leads[0];
-
-    // Check if client already exists with same email (check in client_contacts)
-    const [existingContacts] = await pool.execute(
-      'SELECT cc.client_id FROM client_contacts cc JOIN clients c ON cc.client_id = c.id WHERE cc.email = ? AND c.company_id = ? AND cc.is_deleted = 0 AND c.is_deleted = 0',
-      [lead.email, companyId]
-    );
-
-    if (existingContacts.length > 0) {
-      // Return existing client
-      return { id: existingContacts[0].client_id };
-    }
-
-    // Create new client from lead data
-    const [clientResult] = await pool.execute(
-      `INSERT INTO clients (
-        company_id, company_name, owner_id, address, city, state, zip, country,
-        phone_country_code, phone_number, currency, currency_symbol, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        companyId,
-        lead.company_name || lead.person_name, // Use company name if available, otherwise person name
-        userId,
-        lead.address || '',
-        lead.city || '',
-        lead.state || '',
-        lead.zip || '',
-        lead.country || 'United States',
-        '+1', // Default country code
-        lead.phone || '',
-        'USD',
-        '$',
-        'Active'
-      ]
-    );
-
-    const clientId = clientResult.insertId;
-
-    // Create client contact with email
-    await pool.execute(
-      `INSERT INTO client_contacts (
-        client_id, name, email, phone, is_primary
-      ) VALUES (?, ?, ?, ?, ?)`,
-      [
-        clientId,
-        lead.person_name,
-        lead.email,
-        lead.phone || '',
-        1 // Mark as primary contact
-      ]
-    );
-
-    // Update lead status to Won (converted)
-    await pool.execute(
-      'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      ['Won', leadId]
-    );
-
-    return { id: clientId };
-  } catch (error) {
-    console.error('Error converting lead to client:', error);
-    return null;
-  }
-};
-
 const create = async (req, res) => {
   try {
     const { 
-      valid_till, currency, client_id, lead_id, project_id, 
+      valid_till, currency, client_id, project_id, lead_id,
       calculate_tax, description, note, terms,
-      discount, discount_type, items = [] 
+      discount, discount_type, items = [], status
     } = req.body;
 
-    // If lead_id is provided instead of client_id, convert lead to client
-    let finalClientId = client_id;
-    if (lead_id && !client_id) {
-      // Find or create client from lead
-      const clientFromLead = await convertLeadToClient(lead_id, req.body.company_id || req.query.company_id || 1, req.body.user_id || req.query.user_id || req.userId || 1);
-      if (!clientFromLead) {
-        return res.status(400).json({
-          success: false,
-          error: 'Failed to convert lead to client'
-        });
-      }
-      finalClientId = clientFromLead.id;
-    }
-
-    // Validation
-    if (!valid_till || !finalClientId || !items || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'valid_till, client_id (or lead_id), and items are required'
-      });
-    }
+    // No required validation - save whatever data is provided
 
     const companyId = req.body.company_id || req.query.company_id || 1;
     const estimate_number = await generateEstimateNumber(companyId);
@@ -350,30 +250,33 @@ const create = async (req, res) => {
     const totals = calculateTotals(items, discount || 0, discount_type || '%');
     
     // Insert estimate
+    // Convert all undefined/empty values to null explicitly
     const [result] = await pool.execute(
       `INSERT INTO estimates (
-        company_id, estimate_number, valid_till, currency, client_id, project_id,
+        company_id, estimate_number, valid_till, currency, client_id, project_id, lead_id,
         calculate_tax, description, note, terms, discount, discount_type,
-        sub_total, discount_amount, tax_amount, total, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sub_total, discount_amount, tax_amount, total, created_by, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        companyId,
-        estimate_number,
-        valid_till,
-        currency || 'USD',
-        finalClientId,
-        project_id ?? null,
-        calculate_tax || 'After Discount',
-        description ?? null,
-        note ?? null,
-        terms || 'Thank you for your business.',
-        discount ?? 0,
-        discount_type || '%',
-        totals.sub_total,
-        totals.discount_amount,
-        totals.tax_amount,
-        totals.total,
-        effectiveCreatedBy
+        companyId || null,
+        estimate_number || null,
+        (valid_till && valid_till !== '') ? valid_till : null,
+        (currency && currency !== '') ? currency : 'USD',
+        (client_id && client_id !== '') ? client_id : null,
+        (project_id && project_id !== '') ? project_id : null,
+        (lead_id && lead_id !== '') ? lead_id : null,
+        (calculate_tax && calculate_tax !== '') ? calculate_tax : 'After Discount',
+        (description && description !== '') ? description : null,
+        (note && note !== '') ? note : null,
+        (terms && terms !== '') ? terms : 'Thank you for your business.',
+        (discount !== undefined && discount !== null && discount !== '') ? parseFloat(discount) : 0,
+        (discount_type && discount_type !== '') ? discount_type : '%',
+        totals.sub_total || 0,
+        totals.discount_amount || 0,
+        totals.tax_amount || 0,
+        totals.total || 0,
+        effectiveCreatedBy || 1,
+        (status && status !== '') ? status : 'draft'
       ]
     );
 
@@ -399,11 +302,11 @@ const create = async (req, res) => {
         
         return [
           estimateId,
-          item.name || item.item_name, // Handle both 'name' (from frontend) and 'item_name' (standard)
+          item.item_name,
           item.description || null,
           quantity,
           item.unit || 'Pcs',
-          item.price || item.unit_price || unitPrice, // Handle both 'price' (from frontend) and 'unit_price' (standard)
+          unitPrice,
           item.tax || null,
           taxRate,
           item.file_path || null,

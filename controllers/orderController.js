@@ -136,13 +136,7 @@ const create = async (req, res) => {
     const { title, description, amount, invoice_id, status, client_id } = req.body;
     const companyId = req.body.company_id || req.query.company_id || 1;
 
-    // Validation
-    if (!title) {
-      return res.status(400).json({
-        success: false,
-        error: 'Title is required'
-      });
-    }
+    // Removed required validations - allow empty data
 
     // Find client_id if user_id is provided
     let actualClientId = client_id;
@@ -164,9 +158,9 @@ const create = async (req, res) => {
         companyId,
         actualClientId || null,
         invoice_id || null,
-        title,
+        title || null,
         description || null,
-        amount || 0,
+        amount || null,
         status || 'New'
       ]
     );

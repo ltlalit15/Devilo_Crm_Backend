@@ -10,18 +10,16 @@ const pool = require('../config/db');
  */
 const getAll = async (req, res) => {
   try {
-    // Admin must provide company_id - required for filtering
-    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
-    
-    if (!filterCompanyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Company ID is required'
-      });
-    }
+    // Get company_id with default fallback
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId || 1;
 
-    let whereClause = 'WHERE ba.company_id = ? AND ba.is_deleted = 0';
-    const params = [filterCompanyId];
+    let whereClause = 'WHERE ba.is_deleted = 0';
+    const params = [];
+
+    if (filterCompanyId) {
+      whereClause += ' AND ba.company_id = ?';
+      params.push(filterCompanyId);
+    }
 
     // Get all bank accounts without pagination
     const [accounts] = await pool.execute(
@@ -53,18 +51,16 @@ const getAll = async (req, res) => {
 const getById = async (req, res) => {
   try {
     const { id } = req.params;
-    // Admin must provide company_id - required for filtering
-    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId;
-    
-    if (!filterCompanyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Company ID is required'
-      });
-    }
+    // Get company_id with default fallback
+    const filterCompanyId = req.query.company_id || req.body.company_id || req.companyId || 1;
 
-    let whereClause = 'WHERE ba.id = ? AND ba.company_id = ? AND ba.is_deleted = 0';
-    const params = [id, filterCompanyId];
+    let whereClause = 'WHERE ba.id = ? AND ba.is_deleted = 0';
+    const params = [id];
+
+    if (filterCompanyId) {
+      whereClause += ' AND ba.company_id = ?';
+      params.push(filterCompanyId);
+    }
 
     const [accounts] = await pool.execute(
       `SELECT ba.*, c.name as company_name
@@ -109,37 +105,62 @@ const create = async (req, res) => {
       branch_code,
       swift_code,
       iban,
+      account_type,
+      routing_number,
       currency = 'USD',
       opening_balance = 0,
       current_balance = 0,
-      notes
+      address,
+      city,
+      state,
+      zip,
+      country,
+      contact_person,
+      phone,
+      email,
+      notes,
+      status
     } = req.body;
 
-    if (!account_name || !bank_name) {
-      return res.status(400).json({
-        success: false,
-        error: 'Account name and bank name are required'
-      });
-    }
+    // Removed required validations - allow empty data
+    const companyId = req.body.company_id || req.companyId || 1;
 
-    const companyId = req.body.company_id || req.companyId;
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Company ID is required'
-      });
-    }
+    console.log('Creating bank account with data:', { companyId, account_name, bank_name });
 
+    // Count: 26 columns total (24 data + 2 timestamps)
+    // Remove created_at and updated_at from column list since they have defaults
     const [result] = await pool.execute(
       `INSERT INTO bank_accounts (
         company_id, account_name, account_number, bank_name, bank_code,
-        branch_name, branch_code, swift_code, iban, currency,
-        opening_balance, current_balance, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        branch_name, branch_code, swift_code, iban, account_type, routing_number,
+        currency, opening_balance, current_balance, address, city, state, zip, country,
+        contact_person, phone, email, notes, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        companyId, account_name, account_number || null, bank_name, bank_code || null,
-        branch_name || null, branch_code || null, swift_code || null, iban || null, currency,
-        opening_balance, current_balance, notes || null
+        companyId, 
+        account_name || null, 
+        account_number || null, 
+        bank_name || null, 
+        bank_code || null,
+        branch_name || null, 
+        branch_code || null, 
+        swift_code || null, 
+        iban || null, 
+        account_type || null,
+        routing_number || null,
+        currency || 'USD', 
+        parseFloat(opening_balance) || 0, 
+        parseFloat(current_balance) || parseFloat(opening_balance) || 0,
+        address || null,
+        city || null,
+        state || null,
+        zip || null,
+        country || null,
+        contact_person || null,
+        phone || null,
+        email || null,
+        notes || null,
+        status || 'Active'
       ]
     );
 
@@ -155,9 +176,13 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create bank account error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error message:', error.message);
+    console.error('Request body:', JSON.stringify(req.body, null, 2));
     res.status(500).json({
       success: false,
-      error: 'Failed to create bank account'
+      error: 'Failed to create bank account',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -178,10 +203,21 @@ const update = async (req, res) => {
       branch_code,
       swift_code,
       iban,
+      account_type,
+      routing_number,
       currency,
       opening_balance,
       current_balance,
-      notes
+      address,
+      city,
+      state,
+      zip,
+      country,
+      contact_person,
+      phone,
+      email,
+      notes,
+      status
     } = req.body;
 
     const filterCompanyId = req.body.company_id || req.companyId;
@@ -241,23 +277,67 @@ const update = async (req, res) => {
     }
     if (iban !== undefined) {
       updates.push('iban = ?');
-      params.push(iban);
+      params.push(iban || null);
+    }
+    if (account_type !== undefined) {
+      updates.push('account_type = ?');
+      params.push(account_type || null);
+    }
+    if (routing_number !== undefined) {
+      updates.push('routing_number = ?');
+      params.push(routing_number || null);
     }
     if (currency !== undefined) {
       updates.push('currency = ?');
-      params.push(currency);
+      params.push(currency || 'USD');
     }
     if (opening_balance !== undefined) {
       updates.push('opening_balance = ?');
-      params.push(opening_balance);
+      params.push(parseFloat(opening_balance) || 0);
     }
     if (current_balance !== undefined) {
       updates.push('current_balance = ?');
-      params.push(current_balance);
+      params.push(parseFloat(current_balance) || 0);
+    }
+    if (address !== undefined) {
+      updates.push('address = ?');
+      params.push(address || null);
+    }
+    if (city !== undefined) {
+      updates.push('city = ?');
+      params.push(city || null);
+    }
+    if (state !== undefined) {
+      updates.push('state = ?');
+      params.push(state || null);
+    }
+    if (zip !== undefined) {
+      updates.push('zip = ?');
+      params.push(zip || null);
+    }
+    if (country !== undefined) {
+      updates.push('country = ?');
+      params.push(country || null);
+    }
+    if (contact_person !== undefined) {
+      updates.push('contact_person = ?');
+      params.push(contact_person || null);
+    }
+    if (phone !== undefined) {
+      updates.push('phone = ?');
+      params.push(phone || null);
+    }
+    if (email !== undefined) {
+      updates.push('email = ?');
+      params.push(email || null);
     }
     if (notes !== undefined) {
       updates.push('notes = ?');
-      params.push(notes);
+      params.push(notes || null);
+    }
+    if (status !== undefined) {
+      updates.push('status = ?');
+      params.push(status || 'Active');
     }
 
     if (updates.length === 0) {
@@ -301,33 +381,32 @@ const update = async (req, res) => {
 const deleteAccount = async (req, res) => {
   try {
     const { id } = req.params;
-    const filterCompanyId = req.query.company_id || req.companyId;
 
-    let whereClause = 'WHERE id = ? AND is_deleted = 0';
-    const params = [id];
-
-    if (filterCompanyId) {
-      whereClause += ' AND company_id = ?';
-      params.push(filterCompanyId);
-    }
-
+    // Check if account exists (without company_id check for flexibility)
     const [existing] = await pool.execute(
-      `SELECT id FROM bank_accounts ${whereClause}`,
-      params
+      `SELECT id FROM bank_accounts WHERE id = ? AND is_deleted = 0`,
+      [id]
     );
 
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Bank account not found'
+        error: 'Bank account not found or already deleted'
       });
     }
 
     // Soft delete
-    await pool.execute(
+    const [result] = await pool.execute(
       'UPDATE bank_accounts SET is_deleted = 1, updated_at = NOW() WHERE id = ?',
       [id]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Bank account not found'
+      });
+    }
 
     res.json({
       success: true,

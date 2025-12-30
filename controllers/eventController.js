@@ -149,26 +149,16 @@ const create = async (req, res) => {
     const departments = department_ids || req.body.department || [];
     const employees = employee_ids || select_employee || [];
     const clients = client_ids || select_client || [];
-    const userId = req.query.user_id || req.body.user_id || null;
-    const companyId = req.query.company_id || req.body.company_id || 1;
+    const userId = req.query.user_id || req.body.user_id || req.userId || req.user?.id || null;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
     const eventStatus = status || 'Pending';
     const link = event_link || eventLink || null;
 
-    // Validate required fields
     if (!eventName || !location || !startDate || !startTime || !endDate || !endTime) {
       await connection.rollback();
       return res.status(400).json({
         success: false,
         error: 'Missing required fields: event_name, where, start_date, start_time, end_date, end_time'
-      });
-    }
-
-    // Validate user_id (required for created_by)
-    if (!userId || isNaN(parseInt(userId))) {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        error: 'user_id is required to create an event'
       });
     }
 
@@ -207,6 +197,9 @@ const create = async (req, res) => {
     // Final hostId to use (can be null if no valid user found)
     const hostId = validHostId;
 
+    // Get created_by - must not be null
+    const effectiveCreatedBy = userId || req.userId || req.user?.id || 1;
+    
     // Insert event - use NULL if hostId is not provided or invalid
     const [result] = await connection.execute(
       `INSERT INTO events (
@@ -227,7 +220,7 @@ const create = async (req, res) => {
         hostId || null,
         eventStatus,
         link || null,
-        userId
+        effectiveCreatedBy
       ]
     );
 
@@ -235,53 +228,132 @@ const create = async (req, res) => {
 
     // Insert departments
     if (departments && departments.length > 0) {
-      for (const deptId of departments) {
-        await connection.execute(
-          'INSERT INTO event_departments (event_id, department_id) VALUES (?, ?)',
-          [eventId, deptId]
-        );
+      try {
+        for (const deptId of departments) {
+          const numericDeptId = parseInt(deptId);
+          if (!isNaN(numericDeptId) && numericDeptId > 0) {
+            await connection.execute(
+              'INSERT INTO event_departments (event_id, department_id) VALUES (?, ?)',
+              [eventId, numericDeptId]
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('Error inserting departments, continuing without departments:', err.message);
       }
     }
 
-    // Insert employees - always add the creator if they're an employee
-    const employeesToAdd = [...new Set(employees && employees.length > 0 ? employees : [])];
-    // If creator is employee and not already in list, add them
-    if (userId && !employeesToAdd.includes(userId)) {
-      employeesToAdd.push(userId);
-    }
-    
-    if (employeesToAdd.length > 0) {
-      // Validate all employee IDs exist in users table before inserting
-      const validEmployeeIds = [];
-      for (const empId of employeesToAdd) {
-        if (empId && !isNaN(parseInt(empId))) {
-          const numericEmpId = parseInt(empId);
-          const [empCheck] = await connection.execute(
-            `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
-            [numericEmpId]
-          );
-          if (empCheck.length > 0) {
-            validEmployeeIds.push(numericEmpId);
-          } else {
-            console.warn(`Employee ID ${numericEmpId} not found in users table, skipping`);
+    // Insert employees - validate user_ids exist before inserting
+    // Wrap in try-catch so event creation doesn't fail if employees fail
+    try {
+      // Handle both array of IDs and array of objects
+      let employeesArray = [];
+      if (employees && Array.isArray(employees) && employees.length > 0) {
+        employeesArray = employees
+          .map(emp => {
+            // If it's an object, extract id
+            if (typeof emp === 'object' && emp !== null && emp !== undefined) {
+              if (emp.id !== undefined && emp.id !== null) {
+                return parseInt(emp.id);
+              }
+              return null;
+            }
+            // If it's already a number or string number
+            if (emp !== null && emp !== undefined && emp !== '') {
+              return parseInt(emp);
+            }
+            return null;
+          })
+          .filter(id => id !== null && !isNaN(id) && id > 0 && isFinite(id));
+      }
+      
+      const employeesToAdd = [...new Set(employeesArray)];
+      
+      // If creator is employee and not already in list, add them (only if valid)
+      const numericUserId = userId ? parseInt(userId) : null;
+      if (numericUserId && !isNaN(numericUserId) && numericUserId > 0) {
+        // Check if userId is already in list
+        if (!employeesToAdd.includes(numericUserId)) {
+          // Validate userId exists
+          try {
+            const [userCheck] = await connection.execute(
+              `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+              [numericUserId]
+            );
+            if (userCheck.length > 0) {
+              employeesToAdd.push(numericUserId);
+            } else {
+              console.warn(`Skipping userId ${numericUserId} - user does not exist`);
+            }
+          } catch (err) {
+            console.warn(`Error checking userId ${numericUserId}:`, err.message);
           }
         }
       }
       
-      // Insert only valid employee IDs
-      for (const empId of validEmployeeIds) {
-        try {
-          await connection.execute(
-            'INSERT INTO event_employees (event_id, user_id) VALUES (?, ?)',
-            [eventId, empId]
-          );
-        } catch (err) {
-          // Skip if already exists (unique constraint)
-          if (err.code !== 'ER_DUP_ENTRY') {
-            throw err;
+      // Validate and filter valid employee IDs - double check before insert
+      const validEmployeeIds = [];
+      for (const empId of employeesToAdd) {
+        const numericEmpId = parseInt(empId);
+        if (!isNaN(numericEmpId) && numericEmpId > 0) {
+          try {
+            // Check if user exists
+            const [userExists] = await connection.execute(
+              `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+              [numericEmpId]
+            );
+            if (userExists.length > 0) {
+              validEmployeeIds.push(numericEmpId);
+            } else {
+              console.warn(`Skipping invalid employee_id: ${empId} (user does not exist)`);
+            }
+          } catch (err) {
+            console.warn(`Error validating employee_id ${empId}:`, err.message);
+          }
+        } else {
+          console.warn(`Skipping invalid employee_id format: ${empId}`);
+        }
+      }
+      
+      // Insert only valid employees with additional safety check
+      if (validEmployeeIds.length > 0) {
+        for (const empId of validEmployeeIds) {
+          try {
+            // Final validation before insert
+            const [finalCheck] = await connection.execute(
+              `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
+              [empId]
+            );
+            
+            if (finalCheck.length === 0) {
+              console.warn(`Final check failed for employee_id ${empId} - skipping insert`);
+              continue;
+            }
+            
+            await connection.execute(
+              'INSERT INTO event_employees (event_id, user_id) VALUES (?, ?)',
+              [eventId, empId]
+            );
+          } catch (err) {
+            // Skip if already exists (unique constraint)
+            if (err.code === 'ER_DUP_ENTRY') {
+              // Already exists, skip silently
+              continue;
+            }
+            // For foreign key errors, log and skip
+            if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_ROW_IS_REFERENCED_2') {
+              console.error(`Foreign key error for employee ${empId}:`, err.message);
+              continue;
+            }
+            // For other errors, log but don't throw
+            console.error(`Error inserting employee ${empId} for event ${eventId}:`, err.message);
           }
         }
       }
+    } catch (employeeError) {
+      // Log error but don't fail event creation
+      console.error('Error in employee insertion process:', employeeError.message);
+      console.error('Event will be created without employees');
     }
 
     // Insert clients (if event_clients table exists)
@@ -301,57 +373,9 @@ const create = async (req, res) => {
 
     await connection.commit();
 
-    // Fetch the complete event data to return to the client
-    const [events] = await connection.execute(
-      `SELECT e.*, 
-              u.name as host_name,
-              u.email as host_email
-       FROM events e
-       LEFT JOIN users u ON e.host_id = u.id
-       WHERE e.id = ? AND e.company_id = ?`,
-      [eventId, companyId]
-    );
-
-    const event = events[0];
-
-    // Get departments for the created event
-    const [eventDepartments] = await connection.execute(
-      `SELECT d.id, d.name as department_name 
-       FROM event_departments ed
-       JOIN departments d ON ed.department_id = d.id
-       WHERE ed.event_id = ?`,
-      [eventId]
-    );
-    event.departments = eventDepartments;
-
-    // Get employees for the created event
-    const [eventEmployees] = await connection.execute(
-      `SELECT u.id, u.name, u.email 
-       FROM event_employees ee
-       JOIN users u ON ee.user_id = u.id
-       WHERE ee.event_id = ?`,
-      [eventId]
-    );
-    event.employees = eventEmployees;
-
-    // Get clients for the created event
-    try {
-      const [eventClients] = await connection.execute(
-        `SELECT c.id, c.company_name, u.email 
-         FROM event_clients ec
-         JOIN clients c ON ec.client_id = c.id
-         LEFT JOIN users u ON c.owner_id = u.id
-         WHERE ec.event_id = ?`,
-        [eventId]
-      );
-      event.clients = eventClients;
-    } catch (err) {
-      event.clients = [];
-    }
-
     res.status(201).json({
       success: true,
-      data: event,
+      data: { id: eventId },
       message: 'Event created successfully'
     });
   } catch (error) {
@@ -588,33 +612,41 @@ const update = async (req, res) => {
       }
     }
 
-    // Update employees if provided
+    // Update employees if provided - validate user_ids exist
     if (employee_ids !== undefined) {
       await connection.execute('DELETE FROM event_employees WHERE event_id = ?', [id]);
       if (employee_ids.length > 0) {
-        // Validate all employee IDs exist in users table before inserting
+        // Validate and filter valid employee IDs
         const validEmployeeIds = [];
         for (const empId of employee_ids) {
-          if (empId && !isNaN(parseInt(empId))) {
-            const numericEmpId = parseInt(empId);
-            const [empCheck] = await connection.execute(
+          const numericEmpId = parseInt(empId);
+          if (!isNaN(numericEmpId) && numericEmpId > 0) {
+            // Check if user exists
+            const [userExists] = await connection.execute(
               `SELECT id FROM users WHERE id = ? AND is_deleted = 0`,
               [numericEmpId]
             );
-            if (empCheck.length > 0) {
+            if (userExists.length > 0) {
               validEmployeeIds.push(numericEmpId);
             } else {
-              console.warn(`Employee ID ${numericEmpId} not found in users table, skipping`);
+              console.warn(`Skipping invalid employee_id: ${empId} (user does not exist)`);
             }
           }
         }
         
-        // Insert only valid employee IDs
+        // Insert only valid employees
         for (const empId of validEmployeeIds) {
-          await connection.execute(
-            'INSERT INTO event_employees (event_id, user_id) VALUES (?, ?)',
-            [id, empId]
-          );
+          try {
+            await connection.execute(
+              'INSERT INTO event_employees (event_id, user_id) VALUES (?, ?)',
+              [id, empId]
+            );
+          } catch (err) {
+            // Skip if already exists (unique constraint)
+            if (err.code !== 'ER_DUP_ENTRY') {
+              console.error(`Error inserting employee ${empId} for event ${id}:`, err.message);
+            }
+          }
         }
       }
     }

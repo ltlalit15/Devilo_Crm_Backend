@@ -88,31 +88,20 @@ const getById = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    // Get company_id from multiple sources
-    const companyId = req.companyId || req.body.company_id || req.query.company_id;
-    const userId = req.userId || req.body.user_id || req.body.created_by;
-    
-    if (!companyId) {
-      return res.status(400).json({
-        success: false,
-        error: 'company_id is required'
-      });
-    }
-    
-    const contract_number = await generateContractNumber(companyId);
     const { 
       title, contract_date, valid_until, client_id, project_id,
       lead_id, tax, second_tax, note, file_path, amount, status
     } = req.body;
     
-    // Validation
-    if (!title || !contract_date || !valid_until) {
-      return res.status(400).json({
-        success: false,
-        error: 'title, contract_date, and valid_until are required'
-      });
-    }
+    // No required validation - save whatever data is provided
 
+    const companyId = req.body.company_id || req.query.company_id || req.companyId || 1;
+    const contract_number = await generateContractNumber(companyId);
+    
+    // Get created_by from various sources - body, query, req.userId, or default to 1 (admin)
+    const effectiveCreatedBy = req.body.user_id || req.query.user_id || req.userId || 1;
+
+    // Convert all undefined/empty values to null explicitly
     const [result] = await pool.execute(
       `INSERT INTO contracts (
         company_id, contract_number, title, contract_date, valid_until,
@@ -120,21 +109,21 @@ const create = async (req, res) => {
         amount, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        companyId,
-        contract_number,
-        title,
-        contract_date,
-        valid_until,
-        client_id ?? null,
-        project_id ?? null,
-        lead_id ?? null,
-        tax ?? null,
-        second_tax ?? null,
-        note ?? null,
-        file_path ?? null,
-        amount ?? 0,
-        status || 'Draft',
-        userId || 1
+        companyId || null,
+        contract_number || null,
+        (title && title !== '') ? title : null,
+        (contract_date && contract_date !== '') ? contract_date : null,
+        (valid_until && valid_until !== '') ? valid_until : null,
+        (client_id && client_id !== '') ? client_id : null,
+        (project_id && project_id !== '') ? project_id : null,
+        (lead_id && lead_id !== '') ? lead_id : null,
+        (tax && tax !== '') ? tax : null,
+        (second_tax && second_tax !== '') ? second_tax : null,
+        (note && note !== '') ? note : null,
+        (file_path && file_path !== '') ? file_path : null,
+        (amount !== undefined && amount !== null && amount !== '') ? parseFloat(amount) : 0,
+        (status && status !== '') ? status : 'Draft',
+        effectiveCreatedBy || 1
       ]
     );
 
