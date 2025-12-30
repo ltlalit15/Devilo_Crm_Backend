@@ -7,10 +7,10 @@ const pool = require('../config/db');
 const generateEstimateNumber = async (companyId) => {
   try {
     // Find the highest existing estimate number globally (estimate_number has UNIQUE constraint)
-    // Check all estimates, not just for this company, since estimate_number is globally unique
+    // Include ALL records (even deleted) to avoid duplicate key errors
     const [result] = await pool.execute(
       `SELECT estimate_number FROM estimates 
-       WHERE is_deleted = 0 AND estimate_number LIKE 'EST#%'
+       WHERE estimate_number LIKE 'EST#%'
        ORDER BY LENGTH(estimate_number) DESC, estimate_number DESC 
        LIMIT 1`
     );
@@ -36,7 +36,7 @@ const generateEstimateNumber = async (companyId) => {
     while (attempts < maxAttempts) {
       // Check globally since estimate_number has UNIQUE constraint
       const [existing] = await pool.execute(
-        `SELECT id FROM estimates WHERE estimate_number = ? AND is_deleted = 0`,
+        `SELECT id FROM estimates WHERE estimate_number = ?`,
         [estimateNumber]
       );
       
@@ -97,16 +97,19 @@ const getAll = async (req, res) => {
       params.push(searchPattern, searchPattern);
     }
     
-    // Client filter
+    // Client filter - support both direct client_id and owner_id (user who owns the client)
     if (clientId) {
-      whereClause += ' AND e.client_id = ?';
-      params.push(clientId);
+      whereClause += ' AND (e.client_id = ? OR c.owner_id = ?)';
+      params.push(clientId, clientId);
     }
     
-    // Lead filter
+    // Lead filter - Note: estimates table doesn't have lead_id column
+    // This filter is kept for backward compatibility but won't work with current schema
+    // TODO: Implement lead-to-client conversion logic if needed
     if (leadId) {
-      whereClause += ' AND e.lead_id = ?';
-      params.push(parseInt(leadId));
+      // For now, we'll skip this filter since lead_id column doesn't exist
+      // In future, we could filter by client_id if lead was converted to client
+      console.log('Lead filter requested but lead_id column not available in estimates table');
     }
     
     // Date range filter
@@ -127,7 +130,7 @@ const getAll = async (req, res) => {
         e.id,
         e.company_id,
         e.estimate_number,
-        e.created_at,
+        e.created_at as created,
         e.created_by,
         e.valid_till,
         e.currency,
@@ -230,24 +233,118 @@ const getById = async (req, res) => {
   }
 };
 
+const convertLeadToClient = async (leadId, companyId, userId) => {
+  try {
+    // First, check if lead exists
+    const [leads] = await pool.execute(
+      'SELECT * FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0',
+      [leadId, companyId]
+    );
+
+    if (leads.length === 0) {
+      throw new Error('Lead not found');
+    }
+
+    const lead = leads[0];
+
+    // Check if client already exists with same email (check in client_contacts)
+    const [existingContacts] = await pool.execute(
+      'SELECT cc.client_id FROM client_contacts cc JOIN clients c ON cc.client_id = c.id WHERE cc.email = ? AND c.company_id = ? AND cc.is_deleted = 0 AND c.is_deleted = 0',
+      [lead.email, companyId]
+    );
+
+    if (existingContacts.length > 0) {
+      // Return existing client
+      return { id: existingContacts[0].client_id };
+    }
+
+    // Create new client from lead data
+    const [clientResult] = await pool.execute(
+      `INSERT INTO clients (
+        company_id, company_name, owner_id, address, city, state, zip, country,
+        phone_country_code, phone_number, currency, currency_symbol, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        companyId,
+        lead.company_name || lead.person_name, // Use company name if available, otherwise person name
+        userId,
+        lead.address || '',
+        lead.city || '',
+        lead.state || '',
+        lead.zip || '',
+        lead.country || 'United States',
+        '+1', // Default country code
+        lead.phone || '',
+        'USD',
+        '$',
+        'Active'
+      ]
+    );
+
+    const clientId = clientResult.insertId;
+
+    // Create client contact with email
+    await pool.execute(
+      `INSERT INTO client_contacts (
+        client_id, name, email, phone, is_primary
+      ) VALUES (?, ?, ?, ?, ?)`,
+      [
+        clientId,
+        lead.person_name,
+        lead.email,
+        lead.phone || '',
+        1 // Mark as primary contact
+      ]
+    );
+
+    // Update lead status to Won (converted)
+    await pool.execute(
+      'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['Won', leadId]
+    );
+
+    return { id: clientId };
+  } catch (error) {
+    console.error('Error converting lead to client:', error);
+    return null;
+  }
+};
+
 const create = async (req, res) => {
   try {
     const { 
-      valid_till, currency, client_id, project_id, 
+      valid_till, currency, client_id, lead_id, project_id, 
       calculate_tax, description, note, terms,
       discount, discount_type, items = [] 
     } = req.body;
 
+    // If lead_id is provided instead of client_id, convert lead to client
+    let finalClientId = client_id;
+    if (lead_id && !client_id) {
+      // Find or create client from lead
+      const clientFromLead = await convertLeadToClient(lead_id, req.body.company_id || req.query.company_id || 1, req.body.user_id || req.query.user_id || req.userId || 1);
+      if (!clientFromLead) {
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to convert lead to client'
+        });
+      }
+      finalClientId = clientFromLead.id;
+    }
+
     // Validation
-    if (!valid_till || !client_id || !items || items.length === 0) {
+    if (!valid_till || !finalClientId || !items || items.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'valid_till, client_id, and items are required'
+        error: 'valid_till, client_id (or lead_id), and items are required'
       });
     }
 
     const companyId = req.body.company_id || req.query.company_id || 1;
     const estimate_number = await generateEstimateNumber(companyId);
+    
+    // Get created_by from various sources - body, query, req.userId, or default to 1 (admin)
+    const effectiveCreatedBy = req.body.user_id || req.query.user_id || req.userId || 1;
     
     // Calculate totals from items
     const totals = calculateTotals(items, discount || 0, discount_type || '%');
@@ -264,7 +361,7 @@ const create = async (req, res) => {
         estimate_number,
         valid_till,
         currency || 'USD',
-        client_id,
+        finalClientId,
         project_id ?? null,
         calculate_tax || 'After Discount',
         description ?? null,
@@ -276,7 +373,7 @@ const create = async (req, res) => {
         totals.discount_amount,
         totals.tax_amount,
         totals.total,
-        req.body.user_id || req.query.user_id || null
+        effectiveCreatedBy
       ]
     );
 
@@ -302,11 +399,11 @@ const create = async (req, res) => {
         
         return [
           estimateId,
-          item.item_name,
+          item.name || item.item_name, // Handle both 'name' (from frontend) and 'item_name' (standard)
           item.description || null,
           quantity,
           item.unit || 'Pcs',
-          unitPrice,
+          item.price || item.unit_price || unitPrice, // Handle both 'price' (from frontend) and 'unit_price' (standard)
           item.tax || null,
           taxRate,
           item.file_path || null,
@@ -678,6 +775,9 @@ const convertToInvoice = async (req, res) => {
       );
     }
 
+    // Get created_by from various sources - body, query, req.userId, or default to 1 (admin)
+    const effectiveCreatedBy = req.body.user_id || req.query.user_id || req.userId || 1;
+    
     // Create invoice
     const [invoiceResult] = await pool.execute(
       `INSERT INTO invoices (
@@ -706,7 +806,7 @@ const convertToInvoice = async (req, res) => {
         totals.total,
         totals.unpaid,
         'Unpaid',
-        req.body.user_id || req.query.user_id || null
+        effectiveCreatedBy
       ]
     );
 

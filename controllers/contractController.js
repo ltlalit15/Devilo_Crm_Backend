@@ -88,7 +88,18 @@ const getById = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const contract_number = await generateContractNumber(req.companyId);
+    // Get company_id from multiple sources
+    const companyId = req.companyId || req.body.company_id || req.query.company_id;
+    const userId = req.userId || req.body.user_id || req.body.created_by;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
+    const contract_number = await generateContractNumber(companyId);
     const { 
       title, contract_date, valid_until, client_id, project_id,
       lead_id, tax, second_tax, note, file_path, amount, status
@@ -109,7 +120,7 @@ const create = async (req, res) => {
         amount, status, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.companyId ?? null,
+        companyId,
         contract_number,
         title,
         contract_date,
@@ -123,7 +134,7 @@ const create = async (req, res) => {
         file_path ?? null,
         amount ?? 0,
         status || 'Draft',
-        req.userId ?? null
+        userId || 1
       ]
     );
 

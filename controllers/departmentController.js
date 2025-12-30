@@ -158,34 +158,75 @@ const update = async (req, res) => {
     const { id } = req.params;
     const { name, company_id } = req.body;
     
+    console.log('=== UPDATE DEPARTMENT REQUEST ===');
+    console.log('Department ID:', id);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Query params:', req.query);
+    
     if (!name) {
       return res.status(400).json({ success: false, error: 'Department name is required' });
     }
     
-    const updateFields = ['name = ?'];
-    const updateValues = [name];
+    // Get company_id from multiple sources
+    const finalCompanyId = req.query.company_id || req.body.company_id || req.companyId;
     
-    // Update company_id if provided
-    if (company_id !== undefined) {
+    if (!finalCompanyId) {
+      return res.status(400).json({ success: false, error: 'company_id is required' });
+    }
+    
+    console.log('Final company_id to use:', finalCompanyId);
+    
+    const updateFields = ['name = ?', 'updated_at = CURRENT_TIMESTAMP'];
+    const updateValues = [name.trim()];
+    
+    // Update company_id if explicitly provided and different
+    if (company_id !== undefined && company_id !== finalCompanyId) {
       updateFields.push('company_id = ?');
       updateValues.push(company_id);
     }
     
-    updateValues.push(id, req.companyId);
+    updateValues.push(id, finalCompanyId);
+    
+    console.log('Update query:', `UPDATE departments SET ${updateFields.join(', ')} WHERE id = ? AND company_id = ? AND is_deleted = 0`);
+    console.log('Update values:', updateValues);
     
     const [result] = await pool.execute(
       `UPDATE departments SET ${updateFields.join(', ')} WHERE id = ? AND company_id = ? AND is_deleted = 0`,
       updateValues
     );
     
+    console.log('Update result:', { affectedRows: result.affectedRows, changedRows: result.changedRows });
+    
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Department not found' });
+      return res.status(404).json({ success: false, error: 'Department not found or no changes made' });
     }
     
-    res.json({ success: true, message: 'Department updated successfully' });
+    // Fetch updated department
+    const [updatedDept] = await pool.execute(
+      `SELECT d.*, c.name as company_name,
+       COALESCE((SELECT COUNT(*) FROM employees e WHERE e.department_id = d.id), 0) as total_employees
+       FROM departments d
+       LEFT JOIN companies c ON d.company_id = c.id
+       WHERE d.id = ?`,
+      [id]
+    );
+    
+    res.json({ 
+      success: true, 
+      data: updatedDept[0],
+      message: 'Department updated successfully' 
+    });
   } catch (error) {
     console.error('Error updating department:', error);
-    res.status(500).json({ success: false, error: 'Failed to update department' });
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage,
+      code: error.code
+    });
+    res.status(500).json({ 
+      success: false, 
+      error: error.sqlMessage || error.message || 'Failed to update department' 
+    });
   }
 };
 
@@ -193,18 +234,33 @@ const deleteDept = async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Get company_id from multiple sources
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({ success: false, error: 'company_id is required' });
+    }
+    
+    console.log('Deleting department:', id, 'for company:', companyId);
+    
     const [result] = await pool.execute(
-      `UPDATE departments SET is_deleted = 1 WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      `UPDATE departments SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
     );
     
+    console.log('Delete result:', { affectedRows: result.affectedRows });
+    
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Department not found' });
+      return res.status(404).json({ success: false, error: 'Department not found or already deleted' });
     }
     
     res.json({ success: true, message: 'Department deleted successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to delete department' });
+    console.error('Error deleting department:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.sqlMessage || error.message || 'Failed to delete department' 
+    });
   }
 };
 

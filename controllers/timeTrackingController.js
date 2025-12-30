@@ -2,10 +2,24 @@ const pool = require('../config/db');
 
 const getAll = async (req, res) => {
   try {
-    const companyId = req.query.company_id || req.body.company_id || 1;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    const userId = req.query.user_id || req.body.user_id;
     
-    const whereClause = 'WHERE tl.company_id = ? AND tl.is_deleted = 0 AND u.is_deleted = 0';
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
+    let whereClause = 'WHERE tl.company_id = ? AND tl.is_deleted = 0 AND u.is_deleted = 0';
     const params = [companyId];
+    
+    // Filter by user_id if provided (for employee dashboard)
+    if (userId) {
+      whereClause += ' AND tl.user_id = ?';
+      params.push(userId);
+    }
 
     // Get all time logs without pagination
     const [timeLogs] = await pool.execute(
@@ -55,10 +69,20 @@ const getAll = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const { user_id, project_id, task_id, hours, date, description } = req.body;
+    const { user_id, project_id, task_id, hours, date, description, company_id } = req.body;
+    
+    // Get company_id from body, query, or middleware
+    const companyId = company_id || req.query.company_id || req.companyId;
     
     // For admin, use provided user_id; for employees, use their own userId
     const userId = user_id || req.userId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
     
     if (!userId || !project_id || !hours || !date) {
       return res.status(400).json({
@@ -70,12 +94,35 @@ const create = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO time_logs (company_id, user_id, project_id, task_id, hours, date, description)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.companyId, userId, project_id, task_id || null, hours, date, description || null]
+      [companyId, userId, project_id, task_id || null, hours, date, description || null]
+    );
+    
+    // Fetch the created time log with all details
+    const [timeLogs] = await pool.execute(
+      `SELECT 
+        tl.id,
+        tl.company_id,
+        tl.user_id,
+        tl.project_id,
+        tl.task_id,
+        tl.hours,
+        tl.date,
+        tl.description,
+        tl.created_at,
+        u.name as employee_name,
+        p.project_name as project_name,
+        t.title as task_title
+       FROM time_logs tl
+       JOIN users u ON tl.user_id = u.id
+       LEFT JOIN projects p ON tl.project_id = p.id
+       LEFT JOIN tasks t ON tl.task_id = t.id
+       WHERE tl.id = ?`,
+      [result.insertId]
     );
     
     res.status(201).json({ 
       success: true, 
-      data: { id: result.insertId },
+      data: timeLogs[0] || { id: result.insertId },
       message: 'Time log created successfully'
     });
   } catch (error) {
@@ -90,12 +137,23 @@ const create = async (req, res) => {
 const update = async (req, res) => {
   try {
     const { id } = req.params;
-    const { project_id, task_id, hours, date, description } = req.body;
+    const { project_id, task_id, hours, date, description, company_id, user_id } = req.body;
     
-    // Check if time log exists and belongs to user or company
+    // Get company_id from body, query, or middleware
+    const companyId = company_id || req.query.company_id || req.companyId;
+    const userId = user_id || req.query.user_id || req.userId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
+    // Check if time log exists and belongs to company
     const [existing] = await pool.execute(
       `SELECT id, user_id FROM time_logs WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (existing.length === 0) {
@@ -106,11 +164,18 @@ const update = async (req, res) => {
     }
 
     // For employees, only allow updating their own logs
-    if (req.user.role === 'EMPLOYEE' && existing[0].user_id !== req.userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'You can only update your own time logs'
-      });
+    if (userId && existing[0].user_id !== parseInt(userId)) {
+      // Allow update only if admin or own log
+      const [userCheck] = await pool.execute(
+        `SELECT role FROM users WHERE id = ?`,
+        [userId]
+      );
+      if (userCheck.length > 0 && userCheck[0].role === 'EMPLOYEE') {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only update your own time logs'
+        });
+      }
     }
 
     // Build update query
@@ -196,10 +261,21 @@ const deleteTimeLog = async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Get company_id from query or body
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    const userId = req.query.user_id || req.body.user_id || req.userId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
     // Check if time log exists
     const [existing] = await pool.execute(
       `SELECT id, user_id FROM time_logs WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (existing.length === 0) {
@@ -210,11 +286,18 @@ const deleteTimeLog = async (req, res) => {
     }
 
     // For employees, only allow deleting their own logs
-    if (req.user.role === 'EMPLOYEE' && existing[0].user_id !== req.userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'You can only delete your own time logs'
-      });
+    if (userId && existing[0].user_id !== parseInt(userId)) {
+      // Check if user is admin
+      const [userCheck] = await pool.execute(
+        `SELECT role FROM users WHERE id = ?`,
+        [userId]
+      );
+      if (userCheck.length > 0 && userCheck[0].role === 'EMPLOYEE') {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only delete your own time logs'
+        });
+      }
     }
 
     await pool.execute(
@@ -235,5 +318,128 @@ const deleteTimeLog = async (req, res) => {
   }
 };
 
-module.exports = { getAll, create, update, delete: deleteTimeLog };
+/**
+ * Get time log by ID
+ * GET /api/v1/time-logs/:id
+ */
+const getById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+    
+    const [timeLogs] = await pool.execute(
+      `SELECT 
+        tl.id,
+        tl.company_id,
+        tl.user_id,
+        tl.project_id,
+        tl.task_id,
+        tl.hours,
+        tl.date,
+        tl.description,
+        tl.created_at,
+        tl.updated_at,
+        u.name as employee_name,
+        u.email as employee_email,
+        p.project_name as project_name,
+        t.title as task_title
+       FROM time_logs tl
+       JOIN users u ON tl.user_id = u.id
+       LEFT JOIN projects p ON tl.project_id = p.id
+       LEFT JOIN tasks t ON tl.task_id = t.id
+       WHERE tl.id = ? AND tl.company_id = ? AND tl.is_deleted = 0`,
+      [id, companyId]
+    );
+    
+    if (timeLogs.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Time log not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: timeLogs[0]
+    });
+  } catch (error) {
+    console.error('Get time log by ID error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch time log'
+    });
+  }
+};
+
+/**
+ * Get time log statistics for employee
+ * GET /api/v1/time-logs/stats
+ */
+const getStats = async (req, res) => {
+  try {
+    const companyId = req.query.company_id || req.companyId;
+    const userId = req.query.user_id || req.userId;
+    
+    if (!companyId || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id and user_id are required'
+      });
+    }
+    
+    const today = new Date().toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+    
+    // Get stats
+    const [todayHours] = await pool.execute(
+      `SELECT COALESCE(SUM(hours), 0) as total FROM time_logs 
+       WHERE user_id = ? AND company_id = ? AND date = ? AND is_deleted = 0`,
+      [userId, companyId, today]
+    );
+    
+    const [weekHours] = await pool.execute(
+      `SELECT COALESCE(SUM(hours), 0) as total FROM time_logs 
+       WHERE user_id = ? AND company_id = ? AND date >= ? AND is_deleted = 0`,
+      [userId, companyId, weekAgo]
+    );
+    
+    const [monthHours] = await pool.execute(
+      `SELECT COALESCE(SUM(hours), 0) as total FROM time_logs 
+       WHERE user_id = ? AND company_id = ? AND date >= ? AND is_deleted = 0`,
+      [userId, companyId, monthStart]
+    );
+    
+    const [totalEntries] = await pool.execute(
+      `SELECT COUNT(*) as total FROM time_logs 
+       WHERE user_id = ? AND company_id = ? AND is_deleted = 0`,
+      [userId, companyId]
+    );
+    
+    res.json({
+      success: true,
+      data: {
+        today_hours: parseFloat(todayHours[0].total) || 0,
+        week_hours: parseFloat(weekHours[0].total) || 0,
+        month_hours: parseFloat(monthHours[0].total) || 0,
+        total_entries: totalEntries[0].total || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get time log stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch time log statistics'
+    });
+  }
+};
+
+module.exports = { getAll, getById, getStats, create, update, delete: deleteTimeLog };
 

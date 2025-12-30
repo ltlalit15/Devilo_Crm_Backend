@@ -46,6 +46,8 @@ const bankAccountRoutes = require('./routes/bankAccountRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
 const leaveRequestRoutes = require('./routes/leaveRequestRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const noteRoutes = require('./routes/noteRoutes');
+const orderRoutes = require('./routes/orderRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -60,7 +62,10 @@ app.use(helmet());
 
 // CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: [
+    "http://localhost:5173",
+    "https://crm-update.netlify.app"
+  ],
   credentials: true
 }));
 
@@ -131,6 +136,8 @@ app.use(`${apiBase}/bank-accounts`, bankAccountRoutes);
 app.use(`${apiBase}/audit-logs`, auditLogRoutes);
 app.use(`${apiBase}/leave-requests`, leaveRequestRoutes);
 app.use(`${apiBase}/notifications`, notificationRoutes);
+app.use(`${apiBase}/notes`, noteRoutes);
+app.use(`${apiBase}/orders`, orderRoutes);
 
 // 404 handler
 app.use((req, res) => {

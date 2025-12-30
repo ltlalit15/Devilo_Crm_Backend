@@ -18,6 +18,11 @@ router.post('/contacts', leadController.createContact);
 router.put('/contacts/:id', leadController.updateContact);
 router.delete('/contacts/:id', leadController.deleteContact);
 
+// Labels routes - MUST come before /:id routes
+router.get('/labels', leadController.getAllLabels);
+router.post('/labels', leadController.createLabel);
+router.delete('/labels/:label', leadController.deleteLabel);
+
 // Other specific routes
 router.get('/overview', leadController.getOverview);
 router.post('/bulk-action', leadController.bulkAction);
@@ -28,6 +33,7 @@ router.get('/:id', leadController.getById);
 router.post('/', leadController.create);
 router.put('/:id', leadController.update);
 router.put('/:id/update-status', leadController.updateStatus);
+router.put('/:id/labels', leadController.updateLeadLabels);
 router.delete('/:id', leadController.delete);
 router.post('/:id/convert-to-client', leadController.convertToClient);
 

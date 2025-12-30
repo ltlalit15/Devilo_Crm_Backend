@@ -8,20 +8,43 @@ const fs = require('fs');
  */
 const getAll = async (req, res) => {
   try {
-    const { category } = req.query;
+    const { category, lead_id, project_id, client_id } = req.query;
     
     const companyId = req.query.company_id || req.body.company_id || 1;
     const userId = req.query.user_id || req.body.user_id || null;
 
-    let whereClause = 'WHERE d.company_id = ? AND d.is_deleted = 0';
-    const params = [companyId];
+    let whereClause = 'WHERE d.is_deleted = 0';
+    const params = [];
+
+    // Filter by company
+    if (companyId) {
+      whereClause += ' AND d.company_id = ?';
+      params.push(companyId);
+    }
 
     // For employees/clients, only show their own documents
     if (userId) {
       whereClause += ' AND d.user_id = ?';
       params.push(userId);
     }
-    // Admin can see all company documents
+
+    // Filter by lead_id
+    if (lead_id) {
+      whereClause += ' AND d.lead_id = ?';
+      params.push(lead_id);
+    }
+
+    // Filter by project_id
+    if (project_id) {
+      whereClause += ' AND d.project_id = ?';
+      params.push(project_id);
+    }
+
+    // Filter by client_id
+    if (client_id) {
+      whereClause += ' AND d.client_id = ?';
+      params.push(client_id);
+    }
 
     if (category) {
       whereClause += ' AND d.category = ?';
@@ -118,20 +141,13 @@ const getById = async (req, res) => {
  */
 const create = async (req, res) => {
   try {
-    const { title, category, description, company_id, user_id } = req.body;
+    const { title, name, category, description, company_id, user_id, lead_id, project_id, client_id } = req.body;
     const file = req.file;
 
     if (!file) {
       return res.status(400).json({
         success: false,
         error: 'File is required'
-      });
-    }
-
-    if (!title) {
-      return res.status(400).json({
-        success: false,
-        error: 'Title is required'
       });
     }
 
@@ -143,21 +159,27 @@ const create = async (req, res) => {
     const fileName = file.originalname;
     const fileSize = file.size;
     const fileType = path.extname(fileName).toLowerCase();
+    
+    // Use title, name, or original filename as the document title
+    const documentTitle = title || name || fileName;
 
     const [result] = await pool.execute(
       `INSERT INTO documents (
-        company_id, user_id, title, category, file_path, file_name, file_size, file_type, description
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        company_id, user_id, title, category, file_path, file_name, file_size, file_type, description, lead_id, project_id, client_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
-        userId, // Current user's documents
-        title,
+        userId,
+        documentTitle,
         category || null,
         filePath,
         fileName,
         fileSize,
         fileType,
-        description || null
+        description || null,
+        lead_id || null,
+        project_id || null,
+        client_id || null
       ]
     );
 
@@ -265,8 +287,14 @@ const download = async (req, res) => {
     const userId = req.query.user_id || req.body.user_id || req.userId || null;
     const userRole = req.query.role || req.body.role || req.user?.role || null;
 
-    let whereClause = 'WHERE d.id = ? AND d.company_id = ? AND d.is_deleted = 0';
-    const params = [id, companyId];
+    let whereClause = 'WHERE d.id = ? AND d.is_deleted = 0';
+    const params = [id];
+
+    // Add company filter if provided
+    if (companyId) {
+      whereClause += ' AND d.company_id = ?';
+      params.push(companyId);
+    }
 
     // For employees/clients, only allow download of their own documents
     if ((userRole === 'EMPLOYEE' || userRole === 'CLIENT') && userId) {
@@ -287,22 +315,58 @@ const download = async (req, res) => {
     }
 
     const doc = documents[0];
+    const filePath = doc.file_path || doc.file_url || doc.url;
+    const fileName = doc.file_name || doc.name || doc.title || `document-${id}`;
 
-    if (!doc.file_path) {
+    if (!filePath) {
       return res.status(404).json({
         success: false,
         error: 'File path not found'
       });
     }
 
-    if (!fs.existsSync(doc.file_path)) {
+    // Check if file_path is a URL (external file)
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      // Redirect to the external URL for download
+      return res.redirect(filePath);
+    }
+
+    // For local files, check if file exists
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath);
+    
+    // Also try uploads directory
+    const uploadsPath = path.join(__dirname, '..', 'uploads', path.basename(filePath));
+    
+    let finalPath = null;
+    if (fs.existsSync(absolutePath)) {
+      finalPath = absolutePath;
+    } else if (fs.existsSync(filePath)) {
+      finalPath = filePath;
+    } else if (fs.existsSync(uploadsPath)) {
+      finalPath = uploadsPath;
+    }
+
+    if (!finalPath) {
+      console.error('File not found at paths:', { absolutePath, filePath, uploadsPath });
       return res.status(404).json({
         success: false,
-        error: 'File not found on server'
+        error: 'File not found on server. The file may have been moved or deleted.'
       });
     }
 
-    res.download(doc.file_path, doc.file_name || doc.file_name || 'document');
+    // Set content disposition header for download
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.download(finalPath, fileName, (err) => {
+      if (err) {
+        console.error('Download error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({
+            success: false,
+            error: 'Failed to download file'
+          });
+        }
+      }
+    });
   } catch (error) {
     console.error('Download document error:', error);
     console.error('Error details:', {

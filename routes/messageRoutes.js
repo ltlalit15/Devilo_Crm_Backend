@@ -3,6 +3,7 @@ const router = express.Router();
 const messageController = require('../controllers/messageController');
 
 // No authentication required - all routes are public
+router.get('/available-users', messageController.getAvailableUsers); // Must come before /:id
 router.get('/', messageController.getAll);
 router.get('/:id', messageController.getById);
 router.post('/', messageController.create);

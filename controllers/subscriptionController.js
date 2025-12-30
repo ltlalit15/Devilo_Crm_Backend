@@ -2,11 +2,28 @@ const pool = require('../config/db');
 
 const getAll = async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, client_id } = req.query;
     
     const companyId = req.query.company_id || req.body.company_id || 1;
     let whereClause = 'WHERE s.company_id = ? AND s.is_deleted = 0';
     const params = [companyId];
+
+    // Filter by client_id for client-side access
+    if (client_id) {
+      // First find the client record by user_id
+      const [clients] = await pool.execute(
+        'SELECT id FROM clients WHERE (owner_id = ? OR id = ?) AND company_id = ? AND is_deleted = 0 LIMIT 1',
+        [client_id, client_id, companyId]
+      );
+      
+      if (clients.length > 0) {
+        whereClause += ' AND s.client_id = ?';
+        params.push(clients[0].id);
+      } else {
+        // Return empty if no client found
+        return res.json({ success: true, data: [] });
+      }
+    }
 
     if (status) {
       whereClause += ' AND s.status = ?';
@@ -15,7 +32,13 @@ const getAll = async (req, res) => {
 
     // Get all subscriptions without pagination
     const [subscriptions] = await pool.execute(
-      `SELECT s.*, c.company_name as client_name
+      `SELECT s.*, 
+              s.plan as title,
+              s.plan as plan_name,
+              c.company_name as client_name,
+              s.created_at as first_billing_date,
+              s.completed_cycles,
+              s.total_cycles
        FROM subscriptions s
        LEFT JOIN clients c ON s.client_id = c.id
        ${whereClause}

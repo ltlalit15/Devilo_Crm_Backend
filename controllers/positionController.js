@@ -151,31 +151,43 @@ const update = async (req, res) => {
     const { id } = req.params;
     const { name, department_id, description, company_id } = req.body;
     
+    console.log('=== UPDATE POSITION REQUEST ===');
+    console.log('Position ID:', id);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Query params:', req.query);
+    
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Position name is required' });
     }
 
-    const updateFields = ['name = ?', 'department_id = ?', 'description = ?', 'updated_at = CURRENT_TIMESTAMP'];
-    const updateValues = [name.trim(), department_id || null, description || null];
+    // Get company_id from multiple sources
+    const finalCompanyId = req.query.company_id || company_id || req.companyId;
     
-    // Update company_id if provided
-    if (company_id !== undefined) {
-      updateFields.splice(3, 0, 'company_id = ?'); // Insert before updated_at
-      updateValues.splice(3, 0, company_id);
+    if (!finalCompanyId) {
+      return res.status(400).json({ success: false, error: 'company_id is required' });
     }
     
-    updateValues.push(id);
+    console.log('Final company_id to use:', finalCompanyId);
+
+    const updateFields = ['name = ?', 'department_id = ?', 'description = ?', 'updated_at = CURRENT_TIMESTAMP'];
+    const updateValues = [name.trim(), department_id ? parseInt(department_id) : null, description || null];
     
-    // Remove company_id filter from WHERE clause to allow updating across companies
+    updateValues.push(id, finalCompanyId);
+    
+    console.log('Update query:', `UPDATE positions SET ${updateFields.join(', ')} WHERE id = ? AND company_id = ? AND is_deleted = 0`);
+    console.log('Update values:', updateValues);
+    
     const [result] = await pool.execute(
       `UPDATE positions 
        SET ${updateFields.join(', ')}
-       WHERE id = ? AND is_deleted = 0`,
+       WHERE id = ? AND company_id = ? AND is_deleted = 0`,
       updateValues
     );
     
+    console.log('Update result:', { affectedRows: result.affectedRows, changedRows: result.changedRows });
+    
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Position not found' });
+      return res.status(404).json({ success: false, error: 'Position not found or no changes made' });
     }
     
     // Fetch updated position with company and department names
@@ -198,9 +210,14 @@ const update = async (req, res) => {
     });
   } catch (error) {
     console.error('Update position error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage,
+      code: error.code
+    });
     res.status(500).json({ 
       success: false, 
-      error: error.message || 'Failed to update position'
+      error: error.sqlMessage || error.message || 'Failed to update position'
     });
   }
 };
@@ -209,21 +226,43 @@ const deletePosition = async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Get company_id from multiple sources
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'company_id is required' 
+      });
+    }
+    
+    console.log('Deleting position:', id, 'for company:', companyId);
+    
     const [result] = await pool.execute(
-      `UPDATE positions SET is_deleted = 1 WHERE id = ? AND company_id = ?`,
-      [id, req.companyId]
+      `UPDATE positions SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
     );
     
+    console.log('Delete result:', { affectedRows: result.affectedRows });
+    
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Position not found' });
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Position not found or already deleted' 
+      });
     }
     
     res.json({ success: true, message: 'Position deleted successfully' });
   } catch (error) {
     console.error('Delete position error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      sqlMessage: error.sqlMessage,
+      code: error.code
+    });
     res.status(500).json({ 
       success: false, 
-      error: error.message || 'Failed to delete position'
+      error: error.sqlMessage || error.message || 'Failed to delete position'
     });
   }
 };
