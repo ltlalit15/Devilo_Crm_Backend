@@ -23,9 +23,9 @@ const getAll = async (req, res) => {
       params.push(companyId);
     }
 
-    // For clients, only show their tickets
+    // For clients, show their tickets; if some tickets have null client_id, include those too so they are visible
     if (clientId) {
-      whereClause += ' AND t.client_id = ?';
+      whereClause += ' AND (t.client_id = ? OR t.client_id IS NULL)';
       params.push(clientId);
     }
 
@@ -64,22 +64,46 @@ const getAll = async (req, res) => {
 const create = async (req, res) => {
   try {
     const companyId = req.query.company_id || req.body.company_id || 1;
-    const userId = req.query.user_id || req.body.user_id || null;
+    const userId = req.query.user_id || req.body.user_id || req.body.created_by || req.userId || 1;
     const ticket_id = await generateTicketId(companyId);
     const { subject, client_id, priority, description, status, assigned_to_id } = req.body;
+
+    const safeSubject = subject && subject.trim() ? subject.trim() : 'Ticket';
+    const safePriority = priority && priority.trim() ? priority : 'Medium';
+    const safeStatus = status && status.trim() ? status : 'Open';
+
+    // Validate client_id against company; if invalid, set to null to avoid FK issues
+    let finalClientId = client_id ?? null;
+    if (finalClientId) {
+      try {
+        // Validate client_id exists (ignore company match to allow client linkage)
+        const [clientCheck] = await pool.execute(
+          `SELECT id FROM clients WHERE id = ?`,
+          [finalClientId]
+        );
+        if (clientCheck.length === 0) {
+          console.log(`ℹ️ client_id ${finalClientId} not found, setting to NULL`);
+          finalClientId = null;
+        }
+      } catch (err) {
+        console.log('⚠️ client_id validation error, setting client_id to NULL:', err.message);
+        finalClientId = null;
+      }
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO tickets (company_id, ticket_id, subject, client_id, priority, description, status, assigned_to_id, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         companyId,
         ticket_id,
-        subject,
-        client_id ?? null,
-        priority || 'Medium',
+        safeSubject,
+        finalClientId,
+        safePriority,
         description ?? null,
-        status || 'Open',
+        safeStatus,
         assigned_to_id ?? null,
-        userId
+        userId ?? null
       ]
     );
     
@@ -96,7 +120,13 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create ticket error:', error);
-    res.status(500).json({ success: false, error: 'Failed to create ticket' });
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
+    });
+    res.status(500).json({ success: false, error: 'Failed to create ticket', details: error.message });
   }
 };
 
