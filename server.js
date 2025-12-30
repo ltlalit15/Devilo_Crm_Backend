@@ -61,13 +61,15 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://crm-update.netlify.app"
-  ],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://crm-update.netlify.app",
+    ],
+    credentials: true,
+  })
+);
 
 // Body parser
 app.use(express.json({ limit: '10mb' }));
