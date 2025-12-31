@@ -321,10 +321,26 @@ const create = async (req, res) => {
       task_approval, label, project_members = [], status, progress
     } = req.body;
 
-    // Removed required validations - allow empty data
+    // Validate company_id is required
+    if (!company_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Validate project_name is required
+    if (!project_name || !project_name.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'project_name is required'
+      });
+    }
 
     // Validate client_id if provided
     let validClientId = null;
+    let createdByUserId = req.userId || req.user?.id || null;
+    
     if (client_id) {
       // First try to find by client.id
       const [clients] = await pool.execute(
@@ -342,8 +358,11 @@ const create = async (req, res) => {
         if (clientsByOwner.length > 0) {
           validClientId = clientsByOwner[0].id;
         } else {
-          console.log('Client ID not found in clients table:', client_id);
-          // Don't fail - just set to null
+          // If client_id is a user_id but no client record exists, store it anyway
+          // This allows the project to be found later when fetching by created_by or client_id
+          console.log('Client ID not found in clients table, storing as-is:', client_id);
+          validClientId = client_id; // Store the user_id as client_id so it can be found
+          createdByUserId = client_id; // Also set as created_by
         }
       }
     }
@@ -380,7 +399,7 @@ const create = async (req, res) => {
         department_id || null, validClientId || null, validManagerId || null, project_summary || null, notes || null,
         public_gantt_chart || 'enable', public_task_board || 'enable',
         task_approval || 'disable', label || null, status || 'not started',
-        progress || 0, req.userId || req.user?.id || validManagerId || 1
+        progress || 0, createdByUserId || req.userId || req.user?.id || validManagerId || 1
       ]
     );
 
@@ -534,19 +553,27 @@ const update = async (req, res) => {
 const deleteProject = async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
 
-    const [result] = await pool.execute(
-      `UPDATE projects SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [id]
+    // Check if project exists and belongs to company
+    const [projects] = await pool.execute(
+      `SELECT id FROM projects WHERE id = ? AND company_id = ? AND is_deleted = 0`,
+      [id, companyId]
     );
 
-    if (result.affectedRows === 0) {
+    if (projects.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Project not found'
       });
     }
+
+    // Soft delete project
+    const [result] = await pool.execute(
+      `UPDATE projects SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND company_id = ?`,
+      [id, companyId]
+    );
 
     res.json({
       success: true,

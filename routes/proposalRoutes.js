@@ -6,6 +6,7 @@ const proposalController = require('../controllers/proposalController');
 router.get('/filters', proposalController.getFilters);
 router.get('/', proposalController.getAll);
 router.get('/:id', proposalController.getById);
+router.get('/:id/pdf', proposalController.getPDF);
 router.post('/', proposalController.create);
 router.post('/:id/duplicate', proposalController.duplicate);
 router.post('/:id/convert-to-invoice', proposalController.convertToInvoice);

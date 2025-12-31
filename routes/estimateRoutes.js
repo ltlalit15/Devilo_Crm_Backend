@@ -8,6 +8,7 @@ router.post('/', estimateController.create);
 router.post('/:id/convert-to-invoice', estimateController.convertToInvoice);
 router.post('/:id/send-email', estimateController.sendEmail);
 router.get('/:id', estimateController.getById);
+router.get('/:id/pdf', estimateController.getPDF);
 router.put('/:id', estimateController.update);
 router.delete('/:id', estimateController.delete);
 

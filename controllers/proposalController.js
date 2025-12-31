@@ -720,6 +720,66 @@ const sendEmail = async (req, res) => {
 };
 
 /**
+ * Get proposal PDF
+ * GET /api/v1/proposals/:id/pdf
+ */
+const getPDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId;
+    
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: 'company_id is required'
+      });
+    }
+
+    // Get proposal
+    const [proposals] = await pool.execute(
+      `SELECT e.*, c.company_name as client_name, p.project_name, comp.name as company_name
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 AND (e.estimate_number LIKE 'PROP#%' OR e.status IN ('Sent', 'Draft'))`,
+      [id, companyId]
+    );
+
+    if (proposals.length === 0) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    const proposal = proposals[0];
+
+    // Get proposal items
+    const [items] = await pool.execute(
+      `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+      [id]
+    );
+    proposal.items = items;
+
+    // For now, return JSON. In production, you would generate actual PDF using libraries like pdfkit or puppeteer
+    // This is a placeholder that returns the proposal data
+    if (req.query.download === '1') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=proposal-${proposal.estimate_number}.json`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+    }
+
+    res.json({
+      success: true,
+      data: proposal,
+      message: 'PDF generation will be implemented with pdfkit or puppeteer'
+    });
+  } catch (error) {
+    console.error('Get proposal PDF error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate PDF' });
+  }
+};
+
+/**
  * Get filter options for proposals
  * GET /api/v1/proposals/filters
  */
@@ -986,6 +1046,7 @@ module.exports = {
   sendEmail,
   getFilters,
   updateStatus,
-  duplicate
+  duplicate,
+  getPDF
 };
 

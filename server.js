@@ -48,6 +48,7 @@ const leaveRequestRoutes = require('./routes/leaveRequestRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const noteRoutes = require('./routes/noteRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const itemRoutes = require('./routes/itemRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -61,17 +62,10 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-       "http://localhost:5174",
-      "https://crm-update.netlify.app",
-      "https://crmupdate.netlify.app"
-    ],
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173' || 'https://crmupdate.netlify.app' || 'https://crm-update.netlify.app',
+  credentials: true
+}));
 
 // Body parser
 app.use(express.json({ limit: '10mb' }));
@@ -142,6 +136,7 @@ app.use(`${apiBase}/leave-requests`, leaveRequestRoutes);
 app.use(`${apiBase}/notifications`, notificationRoutes);
 app.use(`${apiBase}/notes`, noteRoutes);
 app.use(`${apiBase}/orders`, orderRoutes);
+app.use(`${apiBase}/items`, itemRoutes);
 
 // 404 handler
 app.use((req, res) => {

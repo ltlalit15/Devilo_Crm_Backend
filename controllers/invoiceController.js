@@ -101,10 +101,24 @@ const getAll = async (req, res) => {
       params.push(status);
     }
     
-    // Client filter
+    // Client filter - handle client_id similar to orders
     if (client_id) {
-      whereClause += ' AND i.client_id = ?';
-      params.push(client_id);
+      // First find the client record by user_id (owner_id) or direct id
+      const [clients] = await pool.execute(
+        'SELECT id FROM clients WHERE (owner_id = ? OR id = ?) AND company_id = ? AND is_deleted = 0 LIMIT 1',
+        [client_id, client_id, filterCompanyId || 1]
+      );
+      
+      if (clients.length > 0) {
+        // If client record found, filter by client_id
+        whereClause += ' AND i.client_id = ?';
+        params.push(clients[0].id);
+      } else {
+        // If no client record found, still show invoices with null client_id
+        // This handles cases where invoices are created from orders
+        // and client_id might be null or the user_id doesn't have a client record
+        whereClause += ' AND i.client_id IS NULL';
+      }
     }
     
     // Project filter
@@ -294,11 +308,20 @@ const create = async (req, res) => {
       shipping_address, generated_by, note, terms, discount, discount_type,
       items = [], is_recurring, billing_frequency, recurring_start_date,
       recurring_total_count, is_time_log_invoice, time_log_from, time_log_to,
-      created_by, user_id
+      created_by, user_id, labels, tax, tax_rate, second_tax, second_tax_rate, tds
     } = req.body;
 
     // Use company_id from body, or fallback to req.companyId
-    const effectiveCompanyId = company_id || req.companyId;
+    const effectiveCompanyId = company_id || req.companyId || 1;
+    
+    // Ensure company_id is a number
+    const companyIdNum = parseInt(effectiveCompanyId, 10);
+    if (isNaN(companyIdNum) || companyIdNum <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid company_id. Must be a positive number.'
+      });
+    }
     
     // Get created_by from various sources - body, req.userId, or default to 1 (admin)
     const effectiveCreatedBy = created_by || user_id || req.userId || 1;
@@ -306,7 +329,7 @@ const create = async (req, res) => {
     // Removed required validations - allow empty data
 
     // Generate invoice number
-    const invoice_number = await generateInvoiceNumber(effectiveCompanyId);
+    const invoice_number = await generateInvoiceNumber(companyIdNum);
 
     // Calculate totals - handle empty items array
     const totals = items && items.length > 0 
@@ -314,50 +337,84 @@ const create = async (req, res) => {
       : { sub_total: 0, discount_amount: 0, tax_amount: 0, total: 0, unpaid: 0 };
 
     // Insert invoice - convert undefined to null for SQL
+    // Check if labels, tax, second_tax, tds columns exist in database
+    const [columns] = await pool.execute(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+       WHERE TABLE_NAME = 'invoices' AND TABLE_SCHEMA = DATABASE()`
+    );
+    const columnNames = columns.map(col => col.COLUMN_NAME);
+    const hasLabels = columnNames.includes('labels');
+    const hasTax = columnNames.includes('tax');
+    const hasSecondTax = columnNames.includes('second_tax');
+    const hasTds = columnNames.includes('tds');
+
+    // Build dynamic INSERT query based on available columns
+    let insertFields = [
+      'company_id', 'invoice_number', 'invoice_date', 'due_date', 'currency', 'exchange_rate',
+      'client_id', 'project_id', 'calculate_tax', 'bank_account', 'payment_details',
+      'billing_address', 'shipping_address', 'generated_by', 'note', 'terms',
+      'discount', 'discount_type', 'sub_total', 'discount_amount', 'tax_amount',
+      'total', 'unpaid', 'status', 'is_recurring', 'billing_frequency',
+      'recurring_start_date', 'recurring_total_count', 'is_time_log_invoice',
+      'time_log_from', 'time_log_to', 'created_by'
+    ];
+    let insertValues = [
+      companyIdNum,
+      invoice_number,
+      invoice_date ?? null,
+      due_date ?? null,
+      currency || 'USD',
+      exchange_rate ?? 1.0,
+      client_id ?? null,
+      project_id ?? null,
+      calculate_tax || 'After Discount',
+      bank_account ?? null,
+      payment_details ?? null,
+      billing_address ?? null,
+      shipping_address ?? null,
+      generated_by || 'Worksuite',
+      note ?? null,
+      terms || 'Thank you for your business.',
+      discount ?? 0,
+      discount_type || '%',
+      totals.sub_total ?? 0,
+      totals.discount_amount ?? 0,
+      totals.tax_amount ?? 0,
+      totals.total ?? 0,
+      totals.unpaid ?? 0,
+      'Unpaid',
+      is_recurring ?? 0,
+      billing_frequency ?? null,
+      recurring_start_date ?? null,
+      recurring_total_count ?? null,
+      is_time_log_invoice ?? 0,
+      time_log_from ?? null,
+      time_log_to ?? null,
+      effectiveCreatedBy
+    ];
+
+    // Add optional fields if columns exist
+    if (hasLabels) {
+      insertFields.push('labels');
+      insertValues.push(labels ?? null);
+    }
+    if (hasTax) {
+      insertFields.push('tax', 'tax_rate');
+      insertValues.push(tax ?? null, tax_rate ?? 0);
+    }
+    if (hasSecondTax) {
+      insertFields.push('second_tax', 'second_tax_rate');
+      insertValues.push(second_tax ?? null, second_tax_rate ?? 0);
+    }
+    if (hasTds) {
+      insertFields.push('tds');
+      insertValues.push(tds ?? null);
+    }
+
+    const placeholders = insertFields.map(() => '?').join(', ');
     const [result] = await pool.execute(
-      `INSERT INTO invoices (
-        company_id, invoice_number, invoice_date, due_date, currency, exchange_rate,
-        client_id, project_id, calculate_tax, bank_account, payment_details,
-        billing_address, shipping_address, generated_by, note, terms,
-        discount, discount_type, sub_total, discount_amount, tax_amount,
-        total, unpaid, status, is_recurring, billing_frequency,
-        recurring_start_date, recurring_total_count, is_time_log_invoice,
-        time_log_from, time_log_to, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        effectiveCompanyId ?? null,
-        invoice_number,
-        invoice_date ?? null,
-        due_date ?? null,
-        currency || 'USD',
-        exchange_rate ?? 1.0,
-        client_id ?? null,
-        project_id ?? null,
-        calculate_tax || 'After Discount',
-        bank_account ?? null,
-        payment_details ?? null,
-        billing_address ?? null,
-        shipping_address ?? null,
-        generated_by || 'Worksuite',
-        note ?? null,
-        terms || 'Thank you for your business.',
-        discount ?? 0,
-        discount_type || '%',
-        totals.sub_total ?? 0,
-        totals.discount_amount ?? 0,
-        totals.tax_amount ?? 0,
-        totals.total ?? 0,
-        totals.unpaid ?? 0,
-        'Unpaid',
-        is_recurring ?? 0,
-        billing_frequency ?? null,
-        recurring_start_date ?? null,
-        recurring_total_count ?? null,
-        is_time_log_invoice ?? 0,
-        time_log_from ?? null,
-        time_log_to ?? null,
-        effectiveCreatedBy
-      ]
+      `INSERT INTO invoices (${insertFields.join(', ')}) VALUES (${placeholders})`,
+      insertValues
     );
 
     const invoiceId = result.insertId;
@@ -419,10 +476,14 @@ const create = async (req, res) => {
     });
   } catch (error) {
     console.error('Create invoice error:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Request body:', req.body);
     res.status(500).json({
       success: false,
       error: 'Failed to create invoice',
-      details: error.message
+      details: error.message,
+      sqlMessage: error.sqlMessage || null,
+      code: error.code || null
     });
   }
 };
@@ -454,7 +515,8 @@ const update = async (req, res) => {
       'invoice_date', 'due_date', 'currency', 'exchange_rate', 'client_id',
       'project_id', 'calculate_tax', 'bank_account', 'payment_details',
       'billing_address', 'shipping_address', 'note', 'terms', 'discount',
-      'discount_type', 'status'
+      'discount_type', 'status', 'labels', 'tax', 'tax_rate', 'second_tax',
+      'second_tax_rate', 'tds', 'is_recurring'
     ];
 
     const updates = [];
@@ -826,15 +888,16 @@ const createRecurring = async (req, res) => {
 const generatePDF = async (req, res) => {
   try {
     const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || req.companyId || 1;
 
     const [invoices] = await pool.execute(
-      `SELECT i.*, c.company_name as client_name, comp.name as company_name, p.project_name
+      `SELECT i.*, c.company_name as client_name, comp.name as company_name, comp.address as company_address, p.project_name
        FROM invoices i
        LEFT JOIN clients c ON i.client_id = c.id
        LEFT JOIN companies comp ON i.company_id = comp.id
        LEFT JOIN projects p ON i.project_id = p.id
        WHERE i.id = ? AND i.company_id = ? AND i.is_deleted = 0`,
-      [id, req.companyId]
+      [id, companyId]
     );
 
     if (invoices.length === 0) {
@@ -851,12 +914,20 @@ const generatePDF = async (req, res) => {
       `SELECT * FROM invoice_items WHERE invoice_id = ?`,
       [invoice.id]
     );
-    invoice.items = items;
+    invoice.items = items || [];
 
-    // Return invoice data formatted for PDF generation
+    // For now, return JSON. In production, you would generate actual PDF using libraries like pdfkit or puppeteer
+    if (req.query.download === '1') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=invoice-${invoice.invoice_number || invoice.id}.json`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+    }
+
     res.json({
       success: true,
-      data: invoice
+      data: invoice,
+      message: 'PDF generation will be implemented with pdfkit or puppeteer'
     });
   } catch (error) {
     console.error('Generate PDF error:', error);

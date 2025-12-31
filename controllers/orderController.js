@@ -53,11 +53,14 @@ const getAll = async (req, res) => {
       );
       
       if (clients.length > 0) {
-        whereClause += ' AND o.client_id = ?';
+        // If client record found, filter by client_id
+        whereClause += ' AND (o.client_id = ? OR o.client_id IS NULL)';
         params.push(clients[0].id);
       } else {
-        // Return empty if no client found
-        return res.json({ success: true, data: [] });
+        // If no client record found, still show orders with null client_id
+        // This handles cases where orders are created from Store checkout
+        // and client_id might be null or the user_id doesn't have a client record
+        whereClause += ' AND o.client_id IS NULL';
       }
     }
 
@@ -78,9 +81,23 @@ const getAll = async (req, res) => {
       params
     );
 
+    // Get order items for each order
+    const ordersWithItems = await Promise.all(
+      orders.map(async (order) => {
+        const [orderItems] = await pool.execute(
+          'SELECT * FROM order_items WHERE order_id = ?',
+          [order.id]
+        );
+        return {
+          ...order,
+          items: orderItems || []
+        };
+      })
+    );
+
     res.json({
       success: true,
-      data: orders
+      data: ordersWithItems
     });
   } catch (error) {
     console.error('Get orders error:', error);
@@ -100,10 +117,13 @@ const getById = async (req, res) => {
     const [orders] = await pool.execute(
       `SELECT o.*, 
               c.company_name as client_name,
-              i.invoice_number
+              i.invoice_number,
+              comp.name as company_name,
+              comp.address as company_address
        FROM orders o
        LEFT JOIN clients c ON o.client_id = c.id
        LEFT JOIN invoices i ON o.invoice_id = i.id
+       LEFT JOIN companies comp ON o.company_id = comp.id
        WHERE o.id = ? AND o.company_id = ? AND o.is_deleted = 0`,
       [id, companyId]
     );
@@ -115,9 +135,20 @@ const getById = async (req, res) => {
       });
     }
 
+    // Get order items
+    const [orderItems] = await pool.execute(
+      `SELECT * FROM order_items WHERE order_id = ?`,
+      [id]
+    );
+
+    const orderData = orders[0];
+    if (orderData) {
+      orderData.items = orderItems || [];
+    }
+
     res.json({
       success: true,
-      data: orders[0]
+      data: orderData
     });
   } catch (error) {
     console.error('Get order error:', error);
@@ -133,21 +164,60 @@ const create = async (req, res) => {
   try {
     await ensureTableExists();
     
-    const { title, description, amount, invoice_id, status, client_id } = req.body;
+    // Create order_items table if it doesn't exist
+    try {
+      await pool.execute(`
+        CREATE TABLE IF NOT EXISTS order_items (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          order_id INT NOT NULL,
+          item_id INT,
+          item_name VARCHAR(255),
+          description TEXT,
+          quantity DECIMAL(10,2) DEFAULT 1,
+          unit VARCHAR(50),
+          unit_price DECIMAL(15,2) DEFAULT 0.00,
+          amount DECIMAL(15,2) DEFAULT 0.00,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+        )
+      `);
+    } catch (tableError) {
+      // Table might already exist
+      console.log('Order items table check:', tableError.code === 'ER_TABLE_EXISTS_ERROR' ? 'exists' : tableError.message);
+    }
+    
+    const { title, description, amount, invoice_id, status, client_id, items = [] } = req.body;
     const companyId = req.body.company_id || req.query.company_id || 1;
 
     // Removed required validations - allow empty data
 
     // Find client_id if user_id is provided
-    let actualClientId = client_id;
+    let actualClientId = null;
     if (client_id) {
-      const [clients] = await pool.execute(
-        'SELECT id FROM clients WHERE (owner_id = ? OR id = ?) AND company_id = ? AND is_deleted = 0 LIMIT 1',
-        [client_id, client_id, companyId]
-      );
-      if (clients.length > 0) {
-        actualClientId = clients[0].id;
+      try {
+        const [clients] = await pool.execute(
+          'SELECT id FROM clients WHERE (owner_id = ? OR id = ?) AND company_id = ? AND is_deleted = 0 LIMIT 1',
+          [client_id, client_id, companyId]
+        );
+        if (clients.length > 0) {
+          actualClientId = clients[0].id;
+        } else {
+          // If client_id is provided but not found, set to null to avoid foreign key constraint error
+          actualClientId = null;
+        }
+      } catch (clientError) {
+        console.error('Error finding client:', clientError);
+        // Set to null if there's an error finding the client
+        actualClientId = null;
       }
+    }
+
+    // Calculate total from items if amount not provided
+    let finalAmount = amount;
+    if (!finalAmount && items.length > 0) {
+      finalAmount = items.reduce((sum, item) => {
+        return sum + (parseFloat(item.amount || 0))
+      }, 0);
     }
 
     const [result] = await pool.execute(
@@ -160,22 +230,56 @@ const create = async (req, res) => {
         invoice_id || null,
         title || null,
         description || null,
-        amount || null,
+        finalAmount || 0,
         status || 'New'
       ]
     );
+
+    const orderId = result.insertId;
+
+    // Insert order items if provided
+    if (items && Array.isArray(items) && items.length > 0) {
+      const itemValues = items.map(item => [
+        orderId,
+        item.item_id || null,
+        item.item_name || item.title || 'Order Item',
+        item.description || null,
+        parseFloat(item.quantity || 1),
+        item.unit || 'PC',
+        parseFloat(item.unit_price || item.rate || 0),
+        parseFloat(item.amount || (item.unit_price || item.rate || 0) * (item.quantity || 1))
+      ]);
+
+      await pool.query(
+        `INSERT INTO order_items (
+          order_id, item_id, item_name, description, quantity, unit, unit_price, amount
+        ) VALUES ?`,
+        [itemValues]
+      );
+    }
 
     const [orders] = await pool.execute(
       `SELECT o.*, c.company_name as client_name
        FROM orders o
        LEFT JOIN clients c ON o.client_id = c.id
        WHERE o.id = ?`,
-      [result.insertId]
+      [orderId]
     );
+
+    // Get order items
+    const [orderItems] = await pool.execute(
+      `SELECT * FROM order_items WHERE order_id = ?`,
+      [orderId]
+    );
+
+    const orderData = orders[0];
+    if (orderData) {
+      orderData.items = orderItems || [];
+    }
 
     res.status(201).json({
       success: true,
-      data: orders[0],
+      data: orderData,
       message: 'Order created successfully'
     });
   } catch (error) {
@@ -339,12 +443,67 @@ const deleteOrder = async (req, res) => {
   }
 };
 
+/**
+ * Get order PDF
+ * GET /api/v1/orders/:id/pdf
+ */
+const getPDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+
+    const [orders] = await pool.execute(
+      `SELECT o.*, 
+              c.company_name as client_name,
+              i.invoice_number,
+              comp.name as company_name
+       FROM orders o
+       LEFT JOIN clients c ON o.client_id = c.id
+       LEFT JOIN invoices i ON o.invoice_id = i.id
+       LEFT JOIN companies comp ON o.company_id = comp.id
+       WHERE o.id = ? AND o.company_id = ? AND o.is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    const order = orders[0];
+
+    // Get order items
+    const [orderItems] = await pool.execute(
+      `SELECT * FROM order_items WHERE order_id = ?`,
+      [id]
+    );
+    order.items = orderItems || [];
+
+    // For now, return JSON. In production, you would generate actual PDF using libraries like pdfkit or puppeteer
+    if (req.query.download === '1') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=order-${order.id}.json`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+    }
+
+    res.json({
+      success: true,
+      data: order,
+      message: 'PDF generation will be implemented with pdfkit or puppeteer'
+    });
+  } catch (error) {
+    console.error('Get order PDF error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate PDF' });
+  }
+};
+
 module.exports = { 
   getAll, 
   getById, 
   create, 
   update, 
   updateStatus, 
-  delete: deleteOrder 
+  delete: deleteOrder,
+  getPDF
 };
 

@@ -123,8 +123,43 @@ const create = async (req, res) => {
       });
     }
 
-    const companyId = req.body.company_id || req.query.company_id || 1;
-    const createdBy = req.body.created_by || req.body.user_id || req.query.user_id || null;
+    let companyId = req.body.company_id || req.query.company_id || null;
+    const createdBy = req.body.created_by || req.body.user_id || req.query.user_id || user_id;
+
+    // Validate user_id exists
+    try {
+      const [userCheck] = await pool.execute(
+        'SELECT id FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (userCheck.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `User ID ${user_id} does not exist`
+        });
+      }
+    } catch (err) {
+      console.error('User validation error:', err);
+      // Continue anyway - might be a permissions issue
+    }
+
+    // Validate company_id if provided
+    if (companyId) {
+      try {
+        const [companyCheck] = await pool.execute(
+          'SELECT id FROM companies WHERE id = ?',
+          [companyId]
+        );
+        if (companyCheck.length === 0) {
+          console.warn(`Company ID ${companyId} does not exist, setting to NULL`);
+          companyId = null;
+        }
+      } catch (err) {
+        console.error('Company validation error:', err);
+        // Continue with null company_id
+        companyId = null;
+      }
+    }
 
     const [result] = await pool.execute(
       `INSERT INTO notifications (
@@ -158,7 +193,9 @@ const create = async (req, res) => {
     console.error('Create notification error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create notification'
+      error: 'Failed to create notification',
+      details: error.message || 'Unknown error',
+      sqlMessage: error.sqlMessage || null
     });
   }
 };

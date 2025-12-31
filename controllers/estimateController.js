@@ -826,6 +826,61 @@ const sendEmail = async (req, res) => {
   }
 };
 
+/**
+ * Get estimate PDF
+ * GET /api/v1/estimates/:id/pdf
+ */
+const getPDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+
+    const [estimates] = await pool.execute(
+      `SELECT e.*, 
+              c.company_name as client_name,
+              p.project_name,
+              comp.name as company_name,
+              comp.address as company_address
+       FROM estimates e
+       LEFT JOIN clients c ON e.client_id = c.id
+       LEFT JOIN projects p ON e.project_id = p.id
+       LEFT JOIN companies comp ON e.company_id = comp.id
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (estimates.length === 0) {
+      return res.status(404).json({ success: false, error: 'Estimate not found' });
+    }
+
+    const estimate = estimates[0];
+
+    // Get estimate items
+    const [items] = await pool.execute(
+      `SELECT * FROM estimate_items WHERE estimate_id = ?`,
+      [id]
+    );
+    estimate.items = items || [];
+
+    // For now, return JSON. In production, you would generate actual PDF using libraries like pdfkit or puppeteer
+    if (req.query.download === '1') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=estimate-${estimate.estimate_number || estimate.id}.json`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+    }
+
+    res.json({
+      success: true,
+      data: estimate,
+      message: 'PDF generation will be implemented with pdfkit or puppeteer'
+    });
+  } catch (error) {
+    console.error('Get estimate PDF error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate PDF' });
+  }
+};
+
 module.exports = {
   getAll,
   getById,
@@ -833,6 +888,7 @@ module.exports = {
   update,
   delete: deleteEstimate,
   convertToInvoice,
-  sendEmail
+  sendEmail,
+  getPDF
 };
 

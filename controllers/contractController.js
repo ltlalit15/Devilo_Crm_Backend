@@ -35,9 +35,15 @@ const getAll = async (req, res) => {
 
     // Get all contracts without pagination
     const [contracts] = await pool.execute(
-      `SELECT c.*, cl.company_name as client_name
+      `SELECT c.*, 
+              cl.company_name as client_name,
+              p.project_name,
+              l.company_name as lead_name,
+              l.person_name as lead_person_name
        FROM contracts c
        LEFT JOIN clients cl ON c.client_id = cl.id
+       LEFT JOIN projects p ON c.project_id = p.id
+       LEFT JOIN leads l ON c.lead_id = l.id
        ${whereClause}
        ORDER BY c.created_at DESC`,
       params
@@ -352,5 +358,53 @@ const deleteContract = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, update, updateStatus, delete: deleteContract };
+/**
+ * Get contract PDF
+ * GET /api/v1/contracts/:id/pdf
+ */
+const getPDF = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const companyId = req.query.company_id || req.body.company_id || 1;
+
+    const [contracts] = await pool.execute(
+      `SELECT c.*, 
+              cl.company_name as client_name,
+              p.project_name,
+              comp.name as company_name,
+              comp.address as company_address
+       FROM contracts c
+       LEFT JOIN clients cl ON c.client_id = cl.id
+       LEFT JOIN projects p ON c.project_id = p.id
+       LEFT JOIN companies comp ON c.company_id = comp.id
+       WHERE c.id = ? AND c.company_id = ? AND c.is_deleted = 0`,
+      [id, companyId]
+    );
+
+    if (contracts.length === 0) {
+      return res.status(404).json({ success: false, error: 'Contract not found' });
+    }
+
+    const contract = contracts[0];
+
+    // For now, return JSON. In production, you would generate actual PDF using libraries like pdfkit or puppeteer
+    if (req.query.download === '1') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=contract-${contract.contract_number || contract.id}.json`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+    }
+
+    res.json({
+      success: true,
+      data: contract,
+      message: 'PDF generation will be implemented with pdfkit or puppeteer'
+    });
+  } catch (error) {
+    console.error('Get contract PDF error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate PDF' });
+  }
+};
+
+module.exports = { getAll, getById, create, update, updateStatus, delete: deleteContract, getPDF };
 

@@ -5,6 +5,114 @@
 const pool = require('../config/db');
 
 /**
+ * Helper function to convert ISO 8601 date string to MySQL DATE format (YYYY-MM-DD)
+ * @param {string|Date|null|undefined} dateValue - The date value to convert
+ * @returns {string|null} - MySQL DATE format string or null
+ */
+const convertToMySQLDate = (dateValue) => {
+  // Handle null, undefined, or empty values
+  if (dateValue === null || dateValue === undefined) {
+    return null;
+  }
+  
+  // Handle empty strings
+  if (dateValue === '' || (typeof dateValue === 'string' && dateValue.trim() === '')) {
+    return null;
+  }
+  
+  // If it's already a Date object, format it
+  if (dateValue instanceof Date) {
+    if (isNaN(dateValue.getTime())) {
+      return null;
+    }
+    const year = dateValue.getFullYear();
+    const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+    const day = String(dateValue.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  // If it's a string, parse it
+  if (typeof dateValue === 'string') {
+    const trimmed = dateValue.trim();
+    
+    // Handle empty string after trim
+    if (trimmed === '') {
+      return null;
+    }
+    
+    // Handle ISO 8601 format: '2025-12-25T00:00:00.000Z' or '2025-12-25T00:00:00Z'
+    // Split on 'T' and take the date part (first 10 characters: YYYY-MM-DD)
+    if (trimmed.includes('T')) {
+      const datePart = trimmed.split('T')[0];
+      // Validate the date part format
+      if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+        return datePart;
+      }
+    }
+    
+    // If it's already in YYYY-MM-DD format, validate and return
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+    
+    // Try to parse as Date and format
+    const date = new Date(trimmed);
+    if (!isNaN(date.getTime())) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+  }
+  
+  return null;
+};
+
+/**
+ * Helper function to sanitize integer values for MySQL
+ * Converts empty strings to null and ensures valid integer values
+ * @param {string|number|null|undefined} intValue - The integer value to sanitize
+ * @returns {number|null} - Valid integer or null
+ */
+const sanitizeInteger = (intValue) => {
+  // Handle null, undefined, or empty values first
+  if (intValue === null || intValue === undefined) {
+    return null;
+  }
+  
+  // Convert empty strings to null (check multiple ways)
+  if (intValue === '' || intValue === 'null' || intValue === 'undefined') {
+    return null;
+  }
+  
+  // If it's a string, trim and check if empty
+  if (typeof intValue === 'string') {
+    const trimmed = intValue.trim();
+    if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') {
+      return null;
+    }
+    // Try to parse as integer
+    const parsed = parseInt(trimmed, 10);
+    // Return null if parsing failed or if it's NaN
+    if (isNaN(parsed) || !isFinite(parsed)) {
+      return null;
+    }
+    return parsed;
+  }
+  
+  // If it's already a number, validate and convert to integer
+  if (typeof intValue === 'number') {
+    if (isNaN(intValue) || !isFinite(intValue)) {
+      return null;
+    }
+    return parseInt(intValue, 10);
+  }
+  
+  // For any other type, return null
+  return null;
+};
+
+/**
  * Get all leads
  * GET /api/v1/leads
  */
@@ -142,13 +250,18 @@ const create = async (req, res) => {
     } = req.body;
 
     // Removed required validations - allow empty data
+    // Sanitize integer fields
+    const sanitizedOwnerId = sanitizeInteger(owner_id);
+    const sanitizedValue = sanitizeInteger(value);
+    const sanitizedProbability = sanitizeInteger(probability);
+    
     // Only validate owner_id if provided, otherwise use default
-    const effectiveOwnerId = owner_id || req.userId || 1;
+    const effectiveOwnerId = sanitizedOwnerId || req.userId || 1;
 
     // Insert lead - convert undefined to null for SQL
     const companyId = req.companyId || req.body.company_id || req.query.company_id || 1;
     // Get created_by from user session, body, query, or use owner_id as fallback
-    const userId = req.userId || req.body.user_id || req.query.user_id || req.body.created_by || owner_id || 1;
+    const userId = req.userId || req.body.user_id || req.query.user_id || req.body.created_by || sanitizedOwnerId || 1;
     const [result] = await pool.execute(
       `INSERT INTO leads (
         company_id, lead_type, company_name, person_name, email, phone,
@@ -170,10 +283,10 @@ const create = async (req, res) => {
         state ?? null,
         zip ?? null,
         country ?? null,
-        value ?? null,
-        due_followup ?? null,
+        sanitizedValue,
+        convertToMySQLDate(due_followup),
         notes ?? null,
-        probability ?? null,
+        sanitizedProbability,
         call_this_week ?? false,
         userId
       ]
@@ -230,6 +343,21 @@ const update = async (req, res) => {
     const updateFields = req.body;
 
     const companyId = req.companyId || req.query.company_id || req.body.company_id || 1;
+    
+    // Pre-process and sanitize updateFields BEFORE building query
+    // Convert due_followup date format if present
+    if (updateFields.hasOwnProperty('due_followup')) {
+      updateFields.due_followup = convertToMySQLDate(updateFields.due_followup);
+    }
+    
+    // Sanitize integer fields if present
+    const integerFields = ['owner_id', 'value', 'probability'];
+    for (const intField of integerFields) {
+      if (updateFields.hasOwnProperty(intField)) {
+        updateFields[intField] = sanitizeInteger(updateFields[intField]);
+      }
+    }
+    
     // Check if lead exists
     const [leads] = await pool.execute(
       `SELECT id FROM leads WHERE id = ? AND company_id = ? AND is_deleted = 0`,
@@ -252,12 +380,18 @@ const update = async (req, res) => {
 
     const updates = [];
     const values = [];
-
+    
     for (const field of allowedFields) {
       if (updateFields.hasOwnProperty(field)) {
+        let fieldValue = updateFields[field];
+        
+        // Convert undefined to null for other fields
+        if (fieldValue === undefined) {
+          fieldValue = null;
+        }
+        
         updates.push(`${field} = ?`);
-        // Convert undefined to null for SQL
-        values.push(updateFields[field] === undefined ? null : updateFields[field]);
+        values.push(fieldValue);
       }
     }
 

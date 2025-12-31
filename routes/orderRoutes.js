@@ -20,5 +20,8 @@ router.patch('/:id/status', orderController.updateStatus);
 // DELETE order (soft delete)
 router.delete('/:id', orderController.delete);
 
+// GET order PDF
+router.get('/:id/pdf', orderController.getPDF);
+
 module.exports = router;
 
